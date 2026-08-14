@@ -1,0 +1,1176 @@
+---
+title: "Evaluating ClustoCell's clustering of pbmc3k"
+author: "Adrian Salavaty"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(pROC)
+library(umap)
+library(cluster)
+library(ggplot2)
+library(dplyr)
+library(splatter)
+library(Seurat)
+library(tidyverse)
+library(scplotter)
+library(scran)
+library(scater)
+library(SingleCellExperiment)
+library(patchwork)
+library(ggpubr)
+library(scales)
+library(PMCMRplus)  # For Friedman post-hoc
+library(reshape2)
+
+```
+
+# Introduction
+
+Script for evaluation of ClustoCell's clustering of pbmc3k.
+
+# Function Defintion
+
+We first define some helper functions.
+
+```{r}
+
+# Personalized Theme function
+
+styled_theme <- function(
+  style = c("academic", "minimal", "modern", "dark", "classic", "void"),
+  border_mode = c("default", "all", "none"),
+  title_align = c("center", "left", "right"),
+  legends_to_drop = NULL,
+  axes_title_drop = FALSE,
+  legend_position = c("default", "top", "bottom", "left", "right", "inside"),
+  axis_title_face = c("regular", "bold"),
+  x_axis_text_angle = 45,
+  x_axis_text_y = -0.3,
+  remove_margin = c("none", "bottom", "all", "top", "left", "right")
+) {
+  style <- match.arg(style)
+  border_mode <- match.arg(border_mode)
+  title_align <- match.arg(title_align)
+  legend_position <- match.arg(legend_position)
+  axis_title_face <- match.arg(axis_title_face)
+  remove_margin <- match.arg(remove_margin)
+
+  base_font <- "Helvetica"
+  align_map <- c(left = 0, center = 0.5, right = 1)
+  hjust_val <- align_map[title_align]
+  thin_size <- 0.3  
+
+  # Decide axis title face
+  axis_face_val <- ifelse(axis_title_face == "bold", "bold", "plain")
+
+  # Base theme selection
+  if (style == "void") {
+    theme_out <- theme_classic(base_size = 13, base_family = base_font) +
+      theme(
+        axis.title.x = element_blank(),  
+        axis.title.y = element_blank(),  
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "academic") {
+    theme_out <- theme_minimal(base_size = 14, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 16, hjust = hjust_val),
+        plot.subtitle = element_text(size = 13, hjust = hjust_val, color = "grey30"),
+        plot.caption = element_text(size = 10, hjust = 1, color = "grey40"),
+        axis.title = element_text(face = axis_face_val, size = 13),
+        axis.text = element_text(size = 12, color = "black"),
+        panel.grid.major = element_line(color = "grey80", size = thin_size),
+        panel.grid.minor = element_blank(),
+        legend.position = "right",
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "minimal") {
+    theme_out <- theme_minimal(base_size = 13, base_family = base_font) +
+      theme(
+        panel.grid = element_blank(),
+        axis.line = element_line(color = "black", size = thin_size),
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.text = element_text(color = "black"),
+        axis.title = element_text(face = axis_face_val),
+        legend.position = "none",
+        legend.title = element_text(face = "italic")
+      )
+  } else if (style == "modern") {
+    theme_out <- theme_light(base_size = 13, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(color = "grey80", linetype = "dashed", size = thin_size),
+        panel.grid.minor = element_blank(),
+        legend.position = "bottom",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "dark") {
+    theme_out <- theme_minimal(base_size = 13, base_family = base_font) +
+      theme(
+        plot.background = element_rect(fill = "black", color = NA),
+        panel.background = element_rect(fill = "black", color = NA),
+        panel.grid.major = element_line(color = "grey30", size = thin_size),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, color = "white", hjust = hjust_val),
+        plot.subtitle = element_text(color = "grey80", hjust = hjust_val),
+        axis.text = element_text(color = "white"),
+        axis.title = element_text(color = "white", face = axis_face_val),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.text = element_text(color = "white"),
+        legend.title = element_text(color = "white", face = "italic"),
+        axis.line = element_line(color = "white", size = thin_size)
+      )
+  } else if (style == "classic") {
+    theme_out <- theme_classic(base_size = 13, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  }
+
+  # Apply border mode
+  if (border_mode == "all") {
+    theme_out <- theme_out + theme(panel.border = element_rect(color = "black", fill = NA, size = thin_size))
+  } else if (border_mode == "none") {
+    theme_out <- theme_out + theme(panel.border = element_blank(), axis.line = element_blank())
+  }
+
+  # Drop axes titles if requested
+  if (axes_title_drop) {
+    theme_out <- theme_out + theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+  }
+
+  # Override x-axis text angle and vertical position
+  theme_out <- theme_out + theme(
+    axis.text.x = element_text(
+      angle = x_axis_text_angle,
+      vjust = 1,
+      hjust = 1,
+      margin = margin(t = x_axis_text_y)
+    )
+  )
+
+  # Handle margin removal
+  if (remove_margin == "all") {
+    theme_out <- theme_out + theme(plot.margin = margin(0, 0, 0, 0))
+  } else if (remove_margin == "top") {
+    theme_out <- theme_out + theme(plot.margin = margin(t = 0))
+  } else if (remove_margin == "bottom") {
+    theme_out <- theme_out + theme(plot.margin = margin(b = 0))
+  } else if (remove_margin == "left") {
+    theme_out <- theme_out + theme(plot.margin = margin(l = 0))
+  } else if (remove_margin == "right") {
+    theme_out <- theme_out + theme(plot.margin = margin(r = 0))
+  }
+  # if "none", do nothing
+
+  # Legend positioning override
+  if (legend_position != "default") {
+    if (legend_position == "inside") {
+      theme_out <- theme_out + theme(
+        legend.position = c(0.98, 0.98),
+        legend.justification = c("right", "top"),
+        legend.direction = "vertical"
+      )
+    } else {
+      horiz <- legend_position %in% c("top", "bottom")
+      theme_out <- theme_out + theme(
+        legend.position = legend_position,
+        legend.direction = if (horiz) "horizontal" else "vertical"
+      )
+    }
+  }
+
+  # Return theme + guides if needed
+  if (!is.null(legends_to_drop)) {
+    drop_list <- lapply(legends_to_drop, function(x) "none")
+    names(drop_list) <- legends_to_drop
+    return(list(theme_out, guides(.list = drop_list)))
+  } else {
+    return(theme_out)
+  }
+}
+
+#____________
+
+# Label plot
+label_plt <- function(label = "Label", size = 1) {
+  ggplot(data.frame(x = 1, y = 1), aes(x = x, y = y)) +
+    # Draw a single vertical bar
+    geom_col(width = 0.6, fill = "lightgrey", color = "black") +
+    # Add vertical text (angle=90)
+    annotate("text", x = 1, y = 0.5, label = label, size = size,
+             angle = 90, size = 6, vjust = 0.5, hjust = 0.5) +
+    # Remove all extra space
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0), limits = c(0, 1)) +
+    theme_void(base_size = 14) +             # no axes, ticks, labels
+    theme(
+        plot.margin = margin(0, 0, 0, 0),      # remove outside margins
+        panel.spacing = unit(0, "pt"),         # remove panel padding
+        plot.background = element_blank(),     # no background
+        panel.background = element_blank()
+    )
+}
+
+## Theme function for the table plots
+custom_tbl_theme <- ttheme(
+  "blank",
+  base_size = 5,  # Increased for scaling height
+  padding = unit(c(1, 2), "mm"),  # Small horizontal, larger vertical padding to expand row heights; adjust vertical as needed
+  tbody.style = tbody_style(
+    color = "black",
+    fill = cbind(rep(c("white", "grey95"), length.out = 10), rep(c("white", "grey95"), length.out = 10)),
+    hjust = 0,  # Left align body text
+    x = 0.02,   # Adjust horizontal position for left alignment
+    fontsize = 5  # Increased for scaling height
+  ),
+  colnames.style = colnames_style(
+    color = "transparent",  # Make column names invisible to remove header
+    fill = "white",
+    fontsize = 0  # Set font size to 0 to effectively hide
+  )
+)
+
+custom_tbl_plusHeader_theme <- ttheme(
+  "blank",
+  base_size = 5,  # Increased for scaling height
+  padding = unit(c(1, 2), "mm"),  # Small horizontal, larger vertical padding to expand row heights; adjust vertical as needed
+  tbody.style = tbody_style(
+    color = "black",
+    fill = cbind(rep(c("white", "grey95"), length.out = 10), rep(c("white", "grey95"), length.out = 10)),
+    hjust = 0,  # Left align body text
+    x = 0.02,   # Adjust horizontal position for left alignment
+    fontsize = 5  # Increased for scaling height
+  ),
+  colnames.style = colnames_style(
+    # color = "transparent",  # Make column names invisible to remove header
+    fill = "lightgrey",
+    fontsize = 5  # Set font size to 0 to effectively hide
+  )
+)
+
+#_____________________
+
+# Min-Max Normalize function
+min_max_norm <- function(x) {
+  min_val <- min(x)
+  max_val <- max(x)
+  if (max_val > min_val) {
+    return((x - min_val) / (max_val - min_val))
+  } else {
+    return(rep(0, length(x)))
+  }
+}
+
+```
+
+
+```{r}
+
+# Concordance = 100*Sum(rowMax)/N
+
+# Best pals from ggsci: pal_npg (10), pal_d3 (20), pal_ucscgb (26), pal_igv (51)
+
+plotthis::palette_list %>% names()
+
+# NPG colors:
+# "#E64B35FF" "#4DBBD5FF" "#00A087FF" "#3C5488FF" "#F39B7FFF" "#8491B4FF" "#91D1C2FF" "#DC0000FF" "#7E6148FF" "#B09C85FF"
+
+# "#5050FFFF" "#CE3D32FF" "#749B58FF" "#F0E685FF" "#466983FF" "#BA6338FF" "#5DB1DDFF" "#802268FF" "#6BD76BFF" "#D595A7FF" "#924822FF" "#837B8DFF" "#C75127FF"
+# "#D58F5CFF" "#7A65A5FF" "#E4AF69FF" "#3B1B53FF" "#CDDEB7FF" "#612A79FF" "#AE1F63FF" "#E7C76FFF" "#5A655EFF" "#CC9900FF" "#99CC00FF" "#A9A9A9FF" "#CC9900FF"
+# "#99CC00FF" "#33CC00FF" "#00CC33FF" "#00CC99FF"
+
+# Define the color palettes
+
+npg_pal <- ggsci::pal_npg()(10)
+npg_reverse_pal <- rev(ggsci::pal_npg("nrc")(10))
+
+```
+
+# Data preparation
+
+## PBMC3K
+
+```{r}
+
+library(patchwork)
+library(scplotter)
+
+# SeuratData::InstallData("pbmc3k")
+pbmc <- SeuratData::LoadData("pbmc3k")
+pbmc <- NormalizeData(pbmc, normalization.method = "LogNormalize", scale.factor = 10000)
+pbmc <- FindVariableFeatures(pbmc, selection.method = "vst", nfeatures = 2000)
+pbmc <- ScaleData(pbmc, features = VariableFeatures(pbmc))
+pbmc <- RunPCA(pbmc, features = VariableFeatures(object = pbmc))
+pbmc <- FindNeighbors(pbmc, dims = 1:10)
+pbmc <- FindClusters(pbmc, resolution = 0.5)
+pbmc <- RunUMAP(pbmc, dims = 1:10)
+pbmc_ClustoCell <- clustoCell(data = pbmc, high_quantile = 0.25, low_quantile = 0.25, subset_to_HVG = F, seed = 121)
+pbmc <- addClustoData(obj = pbmc, clustoCell = pbmc_ClustoCell, major_cluster_name = "ClustoCell", sub_cluster_name = "SubClustoCell")
+
+#____________________________________
+
+pbmc$manual_annot <- pbmc$seurat_annotations
+
+pbmc@meta.data <- pbmc@meta.data %>% 
+  dplyr::mutate(major_manual_cellTypes = case_when(
+    as.character(manual_annot) %in% c("Naive CD4 T", "Memory CD4 T") ~ "CD4 T",
+    as.character(manual_annot) %in% c("B") ~ "B",
+    as.character(manual_annot) %in% c("CD8 T", "NK") ~ "CL",
+    as.character(manual_annot) %in% c("CD14+ Mono", "FCGR3A+ Mono", "DC") ~ "MNP",
+    as.character(manual_annot) %in% c("Platelet") ~ "PLT",
+    .default = NA
+  ))
+
+pbmc$major_manual_cellTypes <- factor(pbmc$major_manual_cellTypes, levels = c("CD4 T", "B", "CL", "MNP", "PLT"))
+
+### Manual annotations
+
+pbmc$manual_annot <- as.character(pbmc$manual_annot)
+pbmc$manual_annot <- factor(pbmc$manual_annot, levels = rev(c("Naive CD4 T", "Memory CD4 T", "B", "CD8 T", "NK", "CD14+ Mono", "FCGR3A+ Mono", "DC", "Platelet")))
+
+```
+
+# First row
+
+```{r}
+
+pbmc_original_umap <- CellDimPlot(pbmc, reduction = "umap", group_by = "manual_annot", label = F, pt_size = 0.0000000001, 
+                                        theme = "theme_blank", xlab = "", ylab = "", raster = F,
+                                        legend.position = "right", legend.direction = "vertical", palette = "npg") +
+  # Add coord_fixed to remove internal axis padding (no expansion around UMAP points)
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # Remove outer white space around entire plot (top, right, bottom, left)
+    plot.tag = element_text(size = 7, face = "bold"),
+    plot.margin = margin(0, 0, 5, 0),
+    legend.margin = margin(t = 0, r = 2, b = 0, l = 2),      # Internal legend padding
+    legend.box.margin = margin(t = 0, r = 2, b = 0, l = 2),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt")
+  ) +
+  labs(color = NULL, x = NULL, y = NULL, tag = "a") +
+  guides(color = guide_legend(override.aes = list(size = 2))) 
+
+
+#____________________________________
+
+### Manual annotations (major celltypes)
+
+pbmc_original_major_umap <- CellDimPlot(pbmc, reduction = "umap", group_by = "major_manual_cellTypes", label = F, pt_size = 0.0000000001, 
+                                  theme = "theme_blank", xlab = "", ylab = "", raster = F,
+                                  legend.position = "right", legend.direction = "vertical", palette = "igv") +
+  scale_color_manual(values = paletteer::paletteer_d("fishualize::Acanthurus_sohal")[c(1,4,3,2,5)]) + 
+  # Add coord_fixed to remove internal axis padding (no expansion around UMAP points)
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # Remove outer white space around entire plot (top, right, bottom, left)
+    plot.margin = margin(0, 0, 5, 0),
+    legend.margin = margin(t = 0, r = 0, b = 0, l = 2),      # Internal legend padding
+    legend.box.margin = margin(t = 0, r = 0, b = 0, l = 2),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt")
+  ) +
+  labs(color = NULL, x = NULL, y = NULL, tag = "b") +
+  guides(color = guide_legend(override.aes = list(size = 2))) 
+
+#__________________________________________________________________________
+
+# Combine plots
+
+pbmc_first_row <- (
+    pbmc_original_umap + 
+    patchwork::plot_spacer() +
+    pbmc_original_major_umap
+) + 
+  plot_layout(widths = c(20, 3, 20), heights = 1, guides = "keep")
+
+
+ggsave(filename = "../../Testing results/pbmc3k/Final/pbmc_first_row.png", 
+       plot = pbmc_first_row, device = "png", width = 6.85, height = 1.762, units = "in", dpi = 300)
+
+ggsave(filename = "../../Testing results/pbmc3k/Final/pbmc_first_row.pdf", 
+       plot = pbmc_first_row, device = "pdf", width = 6.85, height = 1.762, units = "in", dpi = 300)
+
+```
+
+# Second row
+
+```{r}
+
+# Finding concordance of major clusters with major cell types
+pbmc_ClustoCell_vs_ManualAnnot <- table(ClustoCell = as.character(pbmc$ClustoCell), MA = as.character(pbmc$major_manual_cellTypes))
+pbmc_ClustoCell_vs_ManualAnnot_maxOverlap <- round(((pbmc_ClustoCell_vs_ManualAnnot %>% apply(1, max) %>% sum())/ncol(pbmc))*100)
+
+pbmc_ClustoCell_vs_ManualAnnot <- table(ClustoCell = as.character(pbmc$ClustoCell), MA = as.character(pbmc$manual_annot))
+pbmc_ClustoCell_vs_ManualAnnot <- pbmc_ClustoCell_vs_ManualAnnot[-which(rowSums(pbmc_ClustoCell_vs_ManualAnnot) == 0),]
+
+pbmc_ClustoCell_vs_ManualAnnot <- as.data.frame(pbmc_ClustoCell_vs_ManualAnnot)
+colnames(pbmc_ClustoCell_vs_ManualAnnot) <- c("ClustoCell", "Manual Annotations", "Count")
+pbmc_ClustoCell_vs_ManualAnnot <- pbmc_ClustoCell_vs_ManualAnnot %>%
+  mutate(ClustoCell = as.character(ClustoCell))
+
+pbmc_ClustoCell_vs_ManualAnnot$`Manual Annotations` <- as.character(pbmc_ClustoCell_vs_ManualAnnot$`Manual Annotations`)
+
+pbmc_ClustoCell_vs_ManualAnnot$`Manual Annotations` <- factor(pbmc_ClustoCell_vs_ManualAnnot$`Manual Annotations`, levels = c("Naive CD4 T", "Memory CD4 T", "B", "CD8 T", "NK", "CD14+ Mono", "FCGR3A+ Mono", "DC", "Platelet"))
+
+# ---- add colored x-axis tiles
+pbmc_ManualAnnot_cat_df <- pbmc_ClustoCell_vs_ManualAnnot |>
+  distinct(`Manual Annotations`) |>
+  mutate(`Manual Annotations` = factor(levels(`Manual Annotations`), 
+                                       levels = levels(`Manual Annotations`))) %>% 
+  mutate(color = rev(plotthis::palette_list$npg[1:9]))
+
+pbmc_Major_ManualAnnot_cat_df <- pbmc_ManualAnnot_cat_df |>
+  dplyr::mutate(major_manual_cellTypes = case_when(
+    as.character(`Manual Annotations`) %in% c("Naive CD4 T", "Memory CD4 T") ~ "CD4 T",
+    as.character(`Manual Annotations`) %in% c("B") ~ "B",
+    as.character(`Manual Annotations`) %in% c("CD8 T", "NK") ~ "CL",
+    as.character(`Manual Annotations`) %in% c("CD14+ Mono", "FCGR3A+ Mono", "DC") ~ "MNP",
+    as.character(`Manual Annotations`) %in% c("Platelet") ~ "PLT"
+  )) %>% 
+  mutate(color = case_when(
+    major_manual_cellTypes == "CD4 T" ~ paletteer::paletteer_d("fishualize::Acanthurus_sohal")[1],
+    major_manual_cellTypes == "B" ~ paletteer::paletteer_d("fishualize::Acanthurus_sohal")[4],
+    major_manual_cellTypes == "CL" ~ paletteer::paletteer_d("fishualize::Acanthurus_sohal")[3],
+    major_manual_cellTypes == "MNP" ~ paletteer::paletteer_d("fishualize::Acanthurus_sohal")[2],
+    major_manual_cellTypes == "PLT" ~ paletteer::paletteer_d("fishualize::Acanthurus_sohal")[5]
+  ))   
+
+pbmc_ClustoCell_vs_ManualAnnot_plt <- ggplot(pbmc_ClustoCell_vs_ManualAnnot, 
+                                             aes(x = `Manual Annotations`, 
+                                                 y = ClustoCell, color = Count)) +
+  geom_point(size = log10(pbmc_ClustoCell_vs_ManualAnnot$Count)/1.5) +
+  # geom_text(aes(label = Count)) +
+  scale_color_gradient(low = "white", high = scales::muted("#DC0000FF")) +
+  theme_minimal() +
+  labs(y = "ClustoCell", 
+       title = NULL,
+       subtitle = paste0(paste0("Concordance: ",
+                         pbmc_ClustoCell_vs_ManualAnnot_maxOverlap,
+                         '%'), "\nMismatches (n = 81)")) +
+  styled_theme(legend_position = "right", style = "classic", title_align = "left", border_mode = "all", legends_to_drop = "size") +
+  theme(axis.text.y  = element_blank(),   # hide text
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        text = element_text(size = 7),
+        title = element_text(size = 7),
+        plot.title = element_text(size = 7),
+        plot.subtitle = element_text(size = 7, vjust = -1),
+        axis.title = element_text(size = 7),
+        plot.tag = element_text(size = 7, face = "bold"),
+        legend.title = element_text(size = 6),
+        legend.margin = margin(0, 0, 0, 0),      # Internal legend padding
+        legend.box.margin = margin(0, 0, 0, 5),  # External space to plot
+        legend.box.spacing = unit(0, "pt"),
+        legend.key.width = unit(0.25, "cm"),
+        legend.key.height = unit(0.5, "cm")) +
+  
+  geom_tile(
+    data = pbmc_ManualAnnot_cat_df,
+    aes(x = `Manual Annotations`, y = -0.5, fill = color),
+    inherit.aes = FALSE,
+    height = 0.6
+  ) +
+  scale_fill_identity(guide = "none") +                    # use literal colors for strip
+  scale_y_discrete(expand = expansion(add = 0.6)) +  # leave space at bottom
+  coord_cartesian(clip = "off")  +      # prevent clipping of strip
+  
+  ggnewscale::new_scale_fill() +                             # <- start fresh
+  
+  geom_tile(
+    data = pbmc_Major_ManualAnnot_cat_df,
+    aes(x = `Manual Annotations`, y = -1.26, fill = color),
+    inherit.aes = FALSE,
+    height = 0.6
+  ) +
+
+  scale_fill_identity(guide = "none") +                    # use literal colors for strip
+  scale_y_discrete(expand = expansion(add = 0.6)) +  # leave space at bottom
+  coord_cartesian(clip = "off")  +      # prevent clipping of strip
+  coord_flip() +
+  labs(tag = "c") +
+  guides(
+    color = guide_colorbar(
+      barheight = 3    # height of the colorbar (in cm by default)
+    )
+  )
+
+
+#_______________________________
+
+pbmc$Discordant_ClustoCell_major_manual_cellTypes <- paste(
+  pbmc$ClustoCell, pbmc$major_manual_cellTypes, sep = "_"
+)
+
+pbmc@meta.data <- pbmc@meta.data %>% mutate(
+  Discordant_ClustoCell_major_manual_cellTypes = case_match(Discordant_ClustoCell_major_manual_cellTypes,
+                                                            "C1_CL" ~ "Concordant", 
+                                                            "C2_B" ~ "Concordant", 
+                                                            "C3_CD4 T" ~ "Concordant", 
+                                                            "C4_MNP" ~ "Concordant", 
+                                                            "C5_PLT" ~ "Concordant", 
+                                                            .default = Discordant_ClustoCell_major_manual_cellTypes)
+)
+
+pbmc$Discordant_ClustoCell_major_manual_cellTypes[grep("_NA", pbmc$Discordant_ClustoCell_major_manual_cellTypes)] <- NA
+
+Discordant_ClustoCell_major_manual_cellTypes_tbl <- table(pbmc$Discordant_ClustoCell_major_manual_cellTypes)
+Discordant_ClustoCell_major_manual_cellTypes_tbl <- as.data.frame(Discordant_ClustoCell_major_manual_cellTypes_tbl)
+colnames(Discordant_ClustoCell_major_manual_cellTypes_tbl) <- c("Discordance", "Count")
+
+Discordant_ClustoCell_major_manual_cellTypes_tbl <- Discordant_ClustoCell_major_manual_cellTypes_tbl[c(1,3,2,5,6,4,7),]
+
+Discordant_ClustoCell_major_manual_cellTypes_tbl_plt <- ggtexttable(
+  Discordant_ClustoCell_major_manual_cellTypes_tbl,
+  rows = NULL,
+  cols = colnames(Discordant_ClustoCell_major_manual_cellTypes_tbl),  # Remove invisible header row to reduce space below title
+  theme = custom_tbl_plusHeader_theme
+)
+
+# Make the first two rows bold
+Discordant_ClustoCell_major_manual_cellTypes_tbl_plt <- table_cell_font(
+  Discordant_ClustoCell_major_manual_cellTypes_tbl_plt,
+  row = 2:3, 
+  column = 1:ncol(Discordant_ClustoCell_major_manual_cellTypes_tbl),
+  face = "bold",    
+  color = "black",    
+  size = 5              
+)
+
+# Add minimal lines: only top and bottom horizontal lines, no vertical lines for cleaner look
+Discordant_ClustoCell_major_manual_cellTypes_tbl_plt <- Discordant_ClustoCell_major_manual_cellTypes_tbl_plt %>%
+  tab_add_hline(at.row = c(1), row.side = "top", linewidth = 1.5, linetype = 1) %>%  # Thinner lines for elegance
+  tab_add_hline(at.row = nrow(Discordant_ClustoCell_major_manual_cellTypes_tbl), row.side = "bottom", linewidth = 1.5, linetype = 1) +
+  # Removed vertical lines for minimalism
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    plot.subtitle = element_text(size = 7, face = "bold"),
+    text = element_text(size = 6),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # Remove outer white space around entire plot (top, right, bottom, left)
+    legend.margin = margin(0, 0, 0, 0),      # Zeroed out
+    legend.box.margin = margin(0, 0, 0, 0),  # Zeroed out
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt"),
+    plot.margin = unit(c(0, 0, 0, 0), "mm")
+  ) +
+  theme_void()
+
+#________________________________________________
+
+# Evaluation of manually annotated NA cells
+
+Discordant_ClustoCell_major_manual_cellTypes_NA_tbl <- paste(
+  pbmc$ClustoCell, pbmc$major_manual_cellTypes, sep = "_"
+)
+
+Discordant_ClustoCell_major_manual_cellTypes_NA_tbl <- Discordant_ClustoCell_major_manual_cellTypes_NA_tbl[grep("_NA", Discordant_ClustoCell_major_manual_cellTypes_NA_tbl)]
+Discordant_ClustoCell_major_manual_cellTypes_NA_tbl <- table(Discordant_ClustoCell_major_manual_cellTypes_NA_tbl)
+
+Discordant_ClustoCell_major_manual_cellTypes_NA_tbl <- as.data.frame(Discordant_ClustoCell_major_manual_cellTypes_NA_tbl)
+colnames(Discordant_ClustoCell_major_manual_cellTypes_NA_tbl) <- c("Discordance", "Count")
+Discordant_ClustoCell_major_manual_cellTypes_NA_tbl$Discordance <-as.character(Discordant_ClustoCell_major_manual_cellTypes_NA_tbl$Discordance)
+
+Discordant_ClustoCell_major_manual_cellTypes_NA_tbl <- rbind(Discordant_ClustoCell_major_manual_cellTypes_NA_tbl, rep(" ", ncol(Discordant_ClustoCell_major_manual_cellTypes_NA_tbl)))
+Discordant_ClustoCell_major_manual_cellTypes_NA_tbl <- rbind(Discordant_ClustoCell_major_manual_cellTypes_NA_tbl, rep(" ", ncol(Discordant_ClustoCell_major_manual_cellTypes_NA_tbl)))
+
+Discordant_ClustoCell_major_manual_cellTypes_NA_tbl <- Discordant_ClustoCell_major_manual_cellTypes_NA_tbl[c(1,4,3,2,6,7,5),]
+
+Discordant_ClustoCell_major_manual_cellTypes_NA_tbl_plt <- ggtexttable(
+  Discordant_ClustoCell_major_manual_cellTypes_NA_tbl,
+  rows = NULL,
+  cols = colnames(Discordant_ClustoCell_major_manual_cellTypes_NA_tbl),  # Remove invisible header row to reduce space below title
+  theme = custom_tbl_plusHeader_theme
+)
+
+# Make the first two rows bold
+Discordant_ClustoCell_major_manual_cellTypes_NA_tbl_plt <- table_cell_font(
+  Discordant_ClustoCell_major_manual_cellTypes_NA_tbl_plt,
+  row = 2:4, 
+  column = 1:ncol(Discordant_ClustoCell_major_manual_cellTypes_NA_tbl),
+  face = "bold",    
+  color = "black",    
+  size = 5              
+)
+
+# Add minimal lines: only top and bottom horizontal lines, no vertical lines for cleaner look
+Discordant_ClustoCell_major_manual_cellTypes_NA_tbl_plt <- Discordant_ClustoCell_major_manual_cellTypes_NA_tbl_plt %>%
+  tab_add_hline(at.row = c(1), row.side = "top", linewidth = 1.5, linetype = 1) %>%  # Thinner lines for elegance
+  tab_add_hline(at.row = nrow(Discordant_ClustoCell_major_manual_cellTypes_NA_tbl), row.side = "bottom", linewidth = 1.5, linetype = 1) +
+  # Removed vertical lines for minimalism
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 6),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # Remove outer white space around entire plot (top, right, bottom, left)
+    legend.margin = margin(0, 0, 0, 0),      # Zeroed out
+    legend.box.margin = margin(0, 0, 0, 0),  # Zeroed out
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt"),
+    plot.margin = margin(t = 0, r = 0, b = 20, l = 0)
+  ) +
+  theme_void()
+
+#____________________________
+
+# Exploring major discordances
+
+pbmc$Discordant_ClustoCell_major_above10_manual_cellTypes <- paste(
+  pbmc$ClustoCell, pbmc$major_manual_cellTypes, sep = "_"
+)
+
+pbmc@meta.data <- pbmc@meta.data %>% mutate(
+  Discordant_ClustoCell_major_above10_manual_cellTypes = case_match(Discordant_ClustoCell_major_above10_manual_cellTypes,
+                                                            "C1_CL" ~ NA, 
+                                                            "C2_B" ~ NA, 
+                                                            "C3_CD4 T" ~ NA, 
+                                                            "C4_MNP" ~ NA, 
+                                                            "C5_PLT" ~ NA, 
+                                                            "C3_B" ~ NA, 
+                                                            "C4_B" ~ NA, 
+                                                            "C4_CD4 T" ~ NA, 
+                                                            "C4_PLT" ~ NA,
+                                                            "C2_NA" ~ NA,
+                                                            "Quiescent_NA" ~ NA,
+                                                            .default = Discordant_ClustoCell_major_above10_manual_cellTypes)
+)
+
+pbmc$Discordant_ClustoCell_major_above10_manual_cellTypes[is.na(pbmc$Discordant_ClustoCell_major_above10_manual_cellTypes)] <- "Other"
+
+pbmc$Discordant_ClustoCell_major_above10_manual_cellTypes <- factor(
+  pbmc$Discordant_ClustoCell_major_above10_manual_cellTypes,
+  levels = c("C1_CD4 T", "C3_CL", "C1_NA", "C3_NA", "C4_NA", "Other")
+)
+
+pbmc_major_discordance_umap <- CellDimPlot(pbmc, reduction = "umap", group_by = c("Discordant_ClustoCell_major_above10_manual_cellTypes"), 
+                                       label = F, pt_size = 0.000001, 
+                                       highlight = colnames(pbmc)[pbmc$Discordant_ClustoCell_major_above10_manual_cellTypes != "Other"], 
+                                       highlight_alpha = 1,
+                                       highlight_size = 0.15,
+                                       highlight_color = "black",
+                                       highlight_stroke = 0.2,
+                                       theme = "theme_blank", xlab = "", ylab = "", raster = F,
+                                       legend.position = "right", legend.direction = "vertical", palette = "igv") +
+  # Add coord_fixed to remove internal axis padding (no expansion around UMAP points)
+  coord_fixed(clip = "off", expand = FALSE) +  
+  scale_color_manual(values = c("#612A79FF", "#33CC00FF", "#AE1F63FF", "#5050FFFF", "#CC9900FF", "#A9A9A9FF")) +
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # Remove outer white space around entire plot (top, right, bottom, left)
+    plot.margin = margin(0, -10, 0, -15),
+    legend.margin = margin(0, 0, 5, 0),      # Internal legend padding
+    legend.box.margin = margin(0, 0, 0, 5),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt")
+  ) +
+  labs(color = NULL, x = NULL, y = NULL, title = NULL, subtitle = NULL, tag = "e") +
+  guides(color = guide_legend(nrow = 6, byrow = F, override.aes = list(size = 2))) 
+
+#__________________________________________________________________________
+
+# Combine plots
+
+pbmc_second_row <- (
+   pbmc_ClustoCell_vs_ManualAnnot_plt + 
+    ((wrap_elements(Discordant_ClustoCell_major_manual_cellTypes_tbl_plt +
+    Discordant_ClustoCell_major_manual_cellTypes_NA_tbl_plt)) + labs(tag = "d") + theme(plot.tag = element_text(size = 7, face = "bold", vjust = -0.5))) +
+    pbmc_major_discordance_umap
+) + 
+  plot_layout(widths = c(9, 10, 11), heights = 1, guides = "keep")
+
+
+ggsave(filename = "../../Testing results/pbmc3k/Final/pbmc_second_row.png", 
+       plot = pbmc_second_row, device = "png", width = 6.85, height = (1.762)*1.5, units = "in", dpi = 300)
+
+ggsave(filename = "../../Testing results/pbmc3k/Final/pbmc_second_row.pdf", 
+       plot = pbmc_second_row, device = "pdf", width = 6.85, height = (1.762)*1.5, units = "in", dpi = 300)
+
+```
+
+
+# Third row
+
+```{r}
+
+## ClustoCell C1 is of type CD4 T
+pbmc_C1_CD4_T <- colnames(pbmc)[which(pbmc$major_manual_cellTypes == "CD4 T" & pbmc$ClustoCell == "C1")]
+
+## ClustoCell C3 is of type CL
+pbmc_C3_CL <- colnames(pbmc)[which(pbmc$major_manual_cellTypes == "CL" & pbmc$ClustoCell == "C3")]
+
+## ClustoCell C1 is of type NA
+pbmc_C1_NA <- colnames(pbmc)[which(is.na(pbmc$major_manual_cellTypes) & pbmc$ClustoCell == "C1")]
+
+## ClustoCell C3 is of type NA
+pbmc_C3_NA <- colnames(pbmc)[which(is.na(pbmc$major_manual_cellTypes) & pbmc$ClustoCell == "C3")]
+
+## ClustoCell C4 is of type NA
+pbmc_C4_NA <- colnames(pbmc)[which(is.na(pbmc$major_manual_cellTypes) & pbmc$ClustoCell == "C4")]
+
+pbmc_major_discordance_markoCell <- markoCell(data = pbmc, high_quantile = 0.25, low_quantile = 0.25, subset_to_HVG = F, 
+                                           desired_cells = list("C1_CD4 T" = pbmc_C1_CD4_T,
+                                                                "C3_CL" = pbmc_C3_CL,
+                                                                "C1_NA" = pbmc_C1_NA,
+                                                                "C3_NA" = pbmc_C3_NA,
+                                                                "C4_NA" = pbmc_C4_NA))
+
+#________________________________________________
+
+# Visualizing top 10 markers
+
+pbmc_C1_CD4_T_top10pos <- 
+  pbmc_major_discordance_markoCell$cell_subset_markers$positive_markers$`C1_CD4 T` %>% 
+  dplyr::slice(1:10) %>% dplyr::pull(Feature)
+
+pbmc_C1_CD4_T_top10pos_df <-
+  data.frame(
+    Rank1_10 = paste(1:10, pbmc_C1_CD4_T_top10pos[1:10], sep = " : ")
+  )
+
+pbmc_C1_CD4_T_top10pos_plt <- ggtexttable(
+  pbmc_C1_CD4_T_top10pos_df,
+  rows = NULL,
+  cols = NULL,  # Remove invisible header row to reduce space below title
+  theme = custom_tbl_theme
+) 
+
+# Add minimal lines: only top and bottom horizontal lines, no vertical lines for cleaner look
+pbmc_C1_CD4_T_top10pos_plt <- pbmc_C1_CD4_T_top10pos_plt %>%
+  # Removed vertical lines for minimalism
+  tab_add_title(text = "C1\nCD4 T", face = "bold", size = 6, padding = unit(1, "line")) +  # Reduced padding to eliminate top margin
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 6),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # Remove outer white space around entire plot (top, right, bottom, left)
+    legend.margin = margin(0, 0, 0, 0),      # Zeroed out
+    legend.box.margin = margin(0, 0, 0, 0),  # Zeroed out
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(0, "pt"),
+    plot.margin = unit(c(0, 0, -200, 0), "mm")
+  ) +
+  theme_void()
+
+#_____________________________
+
+pbmc_C3_CL_top10pos <- 
+  pbmc_major_discordance_markoCell$cell_subset_markers$positive_markers$`C3_CL` %>% 
+  dplyr::slice(1:10) %>% dplyr::pull(Feature)
+
+pbmc_C3_CL_top10pos_df <-
+  data.frame(
+    Rank1_10 = paste(1:10, pbmc_C3_CL_top10pos[1:10], sep = " : ")
+  )
+
+pbmc_C3_CL_top10pos_plt <- ggtexttable(
+  pbmc_C3_CL_top10pos_df,
+  rows = NULL,
+  cols = NULL,  # Remove invisible header row to reduce space below title
+  theme = custom_tbl_theme
+)
+
+# Add minimal lines: only top and bottom horizontal lines, no vertical lines for cleaner look
+pbmc_C3_CL_top10pos_plt <- pbmc_C3_CL_top10pos_plt %>%
+  # Removed vertical lines for minimalism
+  tab_add_title(text = "C3\nCL", face = "bold", size = 6, padding = unit(1, "line")) +  # Reduced padding to eliminate top margin
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 6),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # Remove outer white space around entire plot (top, right, bottom, left)
+    legend.margin = margin(0, 0, 0, 0),      # Zeroed out
+    legend.box.margin = margin(0, 0, 0, 0),  # Zeroed out
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(0, "pt"),
+    plot.margin = unit(c(0, 0, 0, 0), "mm")
+  ) +
+  theme_void()
+
+#_____________________
+
+pbmc_C1_NA_top10pos <- 
+  pbmc_major_discordance_markoCell$cell_subset_markers$positive_markers$`C1_NA` %>% 
+  dplyr::slice(1:10) %>% dplyr::pull(Feature)
+
+pbmc_C1_NA_top10pos_df <-
+  data.frame(
+    Rank1_10 = paste(1:10, pbmc_C1_NA_top10pos[1:10], sep = " : ")
+  )
+
+pbmc_C1_NA_top10pos_plt <- ggtexttable(
+  pbmc_C1_NA_top10pos_df,
+  rows = NULL,
+  cols = NULL,  # Remove invisible header row to reduce space below title
+  theme = custom_tbl_theme
+)
+
+# Add minimal lines: only top and bottom horizontal lines, no vertical lines for cleaner look
+pbmc_C1_NA_top10pos_plt <- pbmc_C1_NA_top10pos_plt %>%
+  # Removed vertical lines for minimalism
+  tab_add_title(text = "C1\nNA", face = "bold", size = 6, padding = unit(1, "line")) +  # Reduced padding to eliminate top margin
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 6),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # Remove outer white space around entire plot (top, right, bottom, left)
+    legend.margin = margin(0, 0, 0, 0),      # Zeroed out
+    legend.box.margin = margin(0, 0, 0, 0),  # Zeroed out
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(0, "pt"),
+    plot.margin = unit(c(0, 0, 0, 0), "mm")
+  ) +
+  theme_void()
+
+#_____________________
+
+pbmc_C3_NA_top10pos <- 
+  pbmc_major_discordance_markoCell$cell_subset_markers$positive_markers$`C3_NA` %>% 
+  dplyr::slice(1:10) %>% dplyr::pull(Feature)
+
+pbmc_C3_NA_top10pos_df <-
+  data.frame(
+    Rank1_10 = paste(1:10, pbmc_C3_NA_top10pos[1:10], sep = " : ")
+  )
+
+pbmc_C3_NA_top10pos_plt <- ggtexttable(
+  pbmc_C3_NA_top10pos_df,
+  rows = NULL,
+  cols = NULL,  # Remove invisible header row to reduce space below title
+  theme = custom_tbl_theme
+)
+
+# Add minimal lines: only top and bottom horizontal lines, no vertical lines for cleaner look
+pbmc_C3_NA_top10pos_plt <- pbmc_C3_NA_top10pos_plt %>%
+  # Removed vertical lines for minimalism
+  tab_add_title(text = "C3\nNA", face = "bold", size = 6, padding = unit(1, "line")) +  # Reduced padding to eliminate top margin
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 6),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # Remove outer white space around entire plot (top, right, bottom, left)
+    legend.margin = margin(0, 0, 0, 0),      # Zeroed out
+    legend.box.margin = margin(0, 0, 0, 0),  # Zeroed out
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(0, "pt"),
+    plot.margin = unit(c(0, 0, 0, 0), "mm")
+  ) +
+  theme_void()
+
+#_____________________
+
+pbmc_C4_NA_top10pos <- 
+  pbmc_major_discordance_markoCell$cell_subset_markers$positive_markers$`C4_NA` %>% 
+  dplyr::slice(1:10) %>% dplyr::pull(Feature)
+
+pbmc_C4_NA_top10pos_df <-
+  data.frame(
+    Rank1_10 = paste(1:10, pbmc_C4_NA_top10pos[1:10], sep = " : ")
+  )
+
+pbmc_C4_NA_top10pos_plt <- ggtexttable(
+  pbmc_C4_NA_top10pos_df,
+  rows = NULL,
+  cols = NULL,  # Remove invisible header row to reduce space below title
+  theme = custom_tbl_theme
+)
+
+# Add minimal lines: only top and bottom horizontal lines, no vertical lines for cleaner look
+pbmc_C4_NA_top10pos_plt <- pbmc_C4_NA_top10pos_plt %>%
+  # Removed vertical lines for minimalism
+  tab_add_title(text = "C4\nNA", face = "bold", size = 6, padding = unit(1, "line")) +  # Reduced padding to eliminate top margin
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 6),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # Remove outer white space around entire plot (top, right, bottom, left)
+    legend.margin = margin(0, 0, 0, 0),      # Zeroed out
+    legend.box.margin = margin(0, 0, 0, 0),  # Zeroed out
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(0, "pt"),
+    plot.margin = unit(c(0, 0, 0, 0), "mm")
+  ) +
+  theme_void()
+
+#_____________________
+
+# Combine the plots of the subset
+pbmc_pbmc_major_discordance_tbl_combined_plt <- 
+  (pbmc_C1_CD4_T_top10pos_plt +
+     pbmc_C3_CL_top10pos_plt + 
+     pbmc_C1_NA_top10pos_plt +
+     pbmc_C3_NA_top10pos_plt +
+     pbmc_C4_NA_top10pos_plt) +
+  plot_layout(widths = c(0.75, 0.75, 0.9, 1, 0.9), heights = 1, guides = "keep")
+
+#________________________________________________
+
+## Finding the cell type of these cell subsets
+pbmc_major_discordance_typoClust <- typoClust(pbmc_major_discordance_markoCell, tissue = "Blood", 
+                                     use_pos_markers = T, use_neg_markers = F, 
+                                     thresh_mode = "n", thresh = 10)
+
+pbmc_major_discordance_typoClust_df <- rbind(
+  ((pbmc_major_discordance_typoClust$cell_types$`C1_CD4 T` %>% dplyr::select(CellType, Combined_Count, Avg_Pos_Purity, Combined_Score) %>% dplyr::slice(1)) %>% cbind(Cluster = "C1_CD4 T")),
+  ((pbmc_major_discordance_typoClust$cell_types$C3_CL %>% dplyr::select(CellType, Combined_Count, Avg_Pos_Purity, Combined_Score) %>% dplyr::slice(1)) %>% cbind(Cluster = "C3_CL")),
+  ((pbmc_major_discordance_typoClust$cell_types$C1_NA %>% dplyr::select(CellType, Combined_Count, Avg_Pos_Purity, Combined_Score) %>% dplyr::slice(1)) %>% cbind(Cluster = "C1_NA")),
+  ((pbmc_major_discordance_typoClust$cell_types$C3_NA %>% dplyr::select(CellType, Combined_Count, Avg_Pos_Purity, Combined_Score) %>% dplyr::slice(1)) %>% cbind(Cluster = "C3_NA")),
+  ((pbmc_major_discordance_typoClust$cell_types$C4_NA %>% dplyr::select(CellType, Combined_Count, Avg_Pos_Purity, Combined_Score) %>% dplyr::slice(1)) %>% cbind(Cluster = "C4_NA"))
+
+)
+
+#__________
+
+pbmc_major_discordance_typoClust_combScore_vis <- 
+ggplot(pbmc_major_discordance_typoClust_df, 
+       aes(x = reorder(Cluster, Combined_Score))) +
+  geom_col(aes(y = Combined_Score, fill = CellType),
+           width = 0.6, color = "black", alpha = 0.9, linewidth = 0.1) +
+  # geom_point(aes(y = Avg_Pos_Purity * max(Combined_Score), color = CellType, size = Avg_Pos_Purity),
+  #            size = 3, shape = 21, stroke = 1.2, fill = "white") +
+  geom_text(aes(y = Combined_Score, label = round(Combined_Score)), 
+            vjust = -0.8, size = 2) +
+  # geom_text(aes(y = Avg_Pos_Purity * max(Combined_Score),
+  #               label = paste0(round(Avg_Pos_Purity * 100), "%")),
+  #           vjust = -1.5, size = 1.8, color = "gray20", fontface = "italic") +
+  scale_fill_manual(values = c("#CDEE40FF", "#8BD4F7FF", "#E96C0CFF", "#8BD4F7FF", "#8BD4F7FF"), name = NULL) +
+  scale_color_manual(values = c("#CDEE40FF", "#8BD4F7FF", "#E96C0CFF", "#8BD4F7FF", "#8BD4F7FF"), guide = "none") +
+  scale_y_continuous(
+  name = "Combined Score", labels = label_number(scale_cut = cut_short_scale(), accuracy = 1)
+  # sec.axis = sec_axis(
+  #   ~ . / max(pbmc_major_discordance_typoClust_df$Combined_Score),
+  #   name = "Average Purity",
+  #   labels = scales::percent_format(accuracy = 1)
+  #   )
+  ) +
+  coord_cartesian(ylim = c(0, max(pbmc_major_discordance_typoClust_df$Combined_Score))) +
+  labs(
+    title = NULL,
+    subtitle = NULL,
+    x = NULL, tag = "g"
+  ) +
+  theme_minimal(base_size = 15) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title.y = element_text(size = 7),
+    axis.text.x = element_text(angle = 25, vjust = 1.2, face = "plain", color = "black", size = 5.5),
+    axis.text.y = element_text(color = "black"),
+    legend.position = "top",
+    legend.title = element_text(face = "italic", size = 6),
+    text = element_text(size = 6),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    # Remove outer white space around entire plot (top, right, bottom, left)
+    legend.margin = margin(0, 0, 0, 0),      # Zeroed out
+    legend.box.margin = margin(0, 0, 0, 0),  # Zeroed out
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.4, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(10, "pt"),  # Minimize space between point and text
+    legend.key.height = unit(10, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(0, "pt"),
+    plot.margin = unit(c(0, 0, 0, 0), "mm")
+  
+  )
+
+#__________________________
+
+pbmc_major_discordance_typoClust_purity_vis <- 
+ggplot(pbmc_major_discordance_typoClust_df, 
+       aes(x = reorder(Cluster, Avg_Pos_Purity), 
+           y = Avg_Pos_Purity, color = CellType, size = Avg_Pos_Purity)) +
+  # geom_col(aes(y = Combined_Score, fill = CellType),
+  #          width = 0.6, color = "black", alpha = 0.9) +
+  geom_point(size = 3, shape = 21, stroke = 1.2, fill = "white") +
+  # geom_text(aes(y = Combined_Score, label = round(Combined_Score)), 
+  #           vjust = -0.8, size = 2) +
+  geom_text(aes(y = Avg_Pos_Purity,
+                label = paste0(round(Avg_Pos_Purity * 100), "%")),
+            vjust = -1.5, size = 1.8, color = "gray20", fontface = "italic") +
+  scale_fill_manual(values = c("#CDEE40FF", "#8BD4F7FF", "#E96C0CFF", "#8BD4F7FF", "#8BD4F7FF"), name = NULL) +
+  scale_color_manual(values = c("#CDEE40FF", "#8BD4F7FF", "#E96C0CFF", "#8BD4F7FF", "#8BD4F7FF"), guide = "none") +
+  scale_y_continuous(
+  name = "Average Purity"
+  ) +
+  coord_cartesian(ylim = c(0, max(pbmc_major_discordance_typoClust_df$Avg_Pos_Purity))) +
+  labs(
+    title = NULL,
+    subtitle = NULL,
+    x = NULL, tag = NULL
+  ) +
+  theme_minimal(base_size = 15) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title.y = element_text(size = 7),
+    axis.text.x = element_text(angle = 25, vjust = 1.2, face = "plain", color = "black", size = 5.5),
+    axis.text.y = element_text(color = "black"),
+    legend.position = "top",
+    legend.title = element_text(face = "italic", size = 6),
+    text = element_text(size = 6),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    # Remove outer white space around entire plot (top, right, bottom, left)
+    legend.margin = margin(0, 0, 0, 0),      # Zeroed out
+    legend.box.margin = margin(0, 0, 0, 0),  # Zeroed out
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.4, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(10, "pt"),  # Minimize space between point and text
+    legend.key.height = unit(10, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(0, "pt"),
+    plot.margin = unit(c(0, 0, 0, 0), "mm")
+  
+  )
+
+
+#________________________________________________
+#________________________________________________
+
+# Combine the plots
+
+pbmc_third_row <- (
+    (wrap_elements(pbmc_pbmc_major_discordance_tbl_combined_plt) + 
+       labs(tag = "f") + 
+       theme(plot.tag = element_text(size = 7, face = "bold", vjust = -0.5))
+    ) +
+    ((pbmc_major_discordance_typoClust_combScore_vis +
+    pbmc_major_discordance_typoClust_purity_vis) + 
+      plot_layout(widths = c(10, 10), heights = 1, guides = "collect") & theme(legend.position = "top"))
+    ) + 
+    plot_layout(widths = c(25, 30), heights = 1, guides = "keep")
+
+
+ggsave(filename = "../../Testing results/pbmc3k/Final/pbmc_third_row.png", 
+       plot = pbmc_third_row, device = "png", width = 6.85, height = (1.762)*1.5, units = "in", dpi = 300)
+
+ggsave(filename = "../../Testing results/pbmc3k/Final/pbmc_third_row.pdf", 
+       plot = pbmc_third_row, device = "pdf", width = 6.85, height = (1.762)*1.5, units = "in", dpi = 300)
+
+
+```
+
+# Combine all rows
+
+```{r}
+
+fig_pbmc_major_combined_plt <- wrap_plots(wrap_elements(pbmc_first_row), 
+                                          wrap_elements(pbmc_second_row), 
+                                          wrap_elements(pbmc_third_row), 
+                                          heights = c(1, 1.5, 1.5)) & theme(plot.margin = margin(0, 0, 0, 0))
+
+ggsave(filename = "../../Testing results/fig_pbmc_major_combined_plt.pdf", 
+       plot = fig_pbmc_major_combined_plt, device = "pdf", width = 6.85, height = (1.762)*3.7, units = "in", dpi = 300)
+
+ggsave(filename = "../../Testing results/fig_pbmc_major_combined_plt.png", 
+       plot = fig_pbmc_major_combined_plt, device = "png", width = 6.85, height = (1.762)*3.7, units = "in", dpi = 300)
+
+
+```

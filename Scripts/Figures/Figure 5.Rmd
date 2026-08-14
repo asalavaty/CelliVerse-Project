@@ -1,0 +1,2321 @@
+---
+title: "Benchmarking ClustoCell's performance on distinguishing Malignant cells from non malignant cells"
+author: "Adrian Salavaty"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(pROC)
+library(umap)
+library(cluster)
+library(ggplot2)
+library(dplyr)
+library(splatter)
+library(Seurat)
+library(tidyverse)
+library(scplotter)
+library(scran)
+library(scater)
+library(patchwork)
+library(ggpubr)
+library(scales)
+
+```
+
+# Introduction
+
+Script for Benchmarking ClustoCell's performance on distinguishing Malignant cells from non malignant cells.
+
+# Function Defintion
+
+We first define some helper functions.
+
+```{r}
+
+# Personalized Theme function
+
+styled_theme <- function(
+  style = c("academic", "minimal", "modern", "dark", "classic", "void"),
+  border_mode = c("default", "all", "none"),
+  title_align = c("center", "left", "right"),
+  legends_to_drop = NULL,
+  axes_title_drop = FALSE,
+  legend_position = c("default", "top", "bottom", "left", "right", "inside"),
+  axis_title_face = c("regular", "bold"),
+  x_axis_text_angle = 45,
+  x_axis_text_y = -0.3,
+  remove_margin = c("none", "bottom", "all", "top", "left", "right")
+) {
+  style <- match.arg(style)
+  border_mode <- match.arg(border_mode)
+  title_align <- match.arg(title_align)
+  legend_position <- match.arg(legend_position)
+  axis_title_face <- match.arg(axis_title_face)
+  remove_margin <- match.arg(remove_margin)
+
+  base_font <- "Helvetica"
+  align_map <- c(left = 0, center = 0.5, right = 1)
+  hjust_val <- align_map[title_align]
+  thin_size <- 0.3  
+
+  # Decide axis title face
+  axis_face_val <- ifelse(axis_title_face == "bold", "bold", "plain")
+
+  # Base theme selection
+  if (style == "void") {
+    theme_out <- theme_classic(base_size = 13, base_family = base_font) +
+      theme(
+        axis.title.x = element_blank(),  
+        axis.title.y = element_blank(),  
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "academic") {
+    theme_out <- theme_minimal(base_size = 14, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 16, hjust = hjust_val),
+        plot.subtitle = element_text(size = 13, hjust = hjust_val, color = "grey30"),
+        plot.caption = element_text(size = 10, hjust = 1, color = "grey40"),
+        axis.title = element_text(face = axis_face_val, size = 13),
+        axis.text = element_text(size = 12, color = "black"),
+        panel.grid.major = element_line(color = "grey80", size = thin_size),
+        panel.grid.minor = element_blank(),
+        legend.position = "right",
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "minimal") {
+    theme_out <- theme_minimal(base_size = 13, base_family = base_font) +
+      theme(
+        panel.grid = element_blank(),
+        axis.line = element_line(color = "black", size = thin_size),
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.text = element_text(color = "black"),
+        axis.title = element_text(face = axis_face_val),
+        legend.position = "none",
+        legend.title = element_text(face = "italic")
+      )
+  } else if (style == "modern") {
+    theme_out <- theme_light(base_size = 13, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(color = "grey80", linetype = "dashed", size = thin_size),
+        panel.grid.minor = element_blank(),
+        legend.position = "bottom",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "dark") {
+    theme_out <- theme_minimal(base_size = 13, base_family = base_font) +
+      theme(
+        plot.background = element_rect(fill = "black", color = NA),
+        panel.background = element_rect(fill = "black", color = NA),
+        panel.grid.major = element_line(color = "grey30", size = thin_size),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, color = "white", hjust = hjust_val),
+        plot.subtitle = element_text(color = "grey80", hjust = hjust_val),
+        axis.text = element_text(color = "white"),
+        axis.title = element_text(color = "white", face = axis_face_val),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.text = element_text(color = "white"),
+        legend.title = element_text(color = "white", face = "italic"),
+        axis.line = element_line(color = "white", size = thin_size)
+      )
+  } else if (style == "classic") {
+    theme_out <- theme_classic(base_size = 13, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  }
+
+  # Apply border mode
+  if (border_mode == "all") {
+    theme_out <- theme_out + theme(panel.border = element_rect(color = "black", fill = NA, size = thin_size))
+  } else if (border_mode == "none") {
+    theme_out <- theme_out + theme(panel.border = element_blank(), axis.line = element_blank())
+  }
+
+  # Drop axes titles if requested
+  if (axes_title_drop) {
+    theme_out <- theme_out + theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+  }
+
+  # Override x-axis text angle and vertical position
+  theme_out <- theme_out + theme(
+    axis.text.x = element_text(
+      angle = x_axis_text_angle,
+      vjust = 1,
+      hjust = 1,
+      margin = margin(t = x_axis_text_y)
+    )
+  )
+
+  # Handle margin removal
+  if (remove_margin == "all") {
+    theme_out <- theme_out + theme(plot.margin = margin(0, 0, 0, 0))
+  } else if (remove_margin == "top") {
+    theme_out <- theme_out + theme(plot.margin = margin(t = 0))
+  } else if (remove_margin == "bottom") {
+    theme_out <- theme_out + theme(plot.margin = margin(b = 0))
+  } else if (remove_margin == "left") {
+    theme_out <- theme_out + theme(plot.margin = margin(l = 0))
+  } else if (remove_margin == "right") {
+    theme_out <- theme_out + theme(plot.margin = margin(r = 0))
+  }
+  # if "none", do nothing
+
+  # Legend positioning override
+  if (legend_position != "default") {
+    if (legend_position == "inside") {
+      theme_out <- theme_out + theme(
+        legend.position = c(0.98, 0.98),
+        legend.justification = c("right", "top"),
+        legend.direction = "vertical"
+      )
+    } else {
+      horiz <- legend_position %in% c("top", "bottom")
+      theme_out <- theme_out + theme(
+        legend.position = legend_position,
+        legend.direction = if (horiz) "horizontal" else "vertical"
+      )
+    }
+  }
+
+  # Return theme + guides if needed
+  if (!is.null(legends_to_drop)) {
+    drop_list <- lapply(legends_to_drop, function(x) "none")
+    names(drop_list) <- legends_to_drop
+    return(list(theme_out, guides(.list = drop_list)))
+  } else {
+    return(theme_out)
+  }
+}
+
+#____________
+
+# Label plot
+label_plt <- function(label = "Label", size = 1) {
+  ggplot(data.frame(x = 1, y = 1), aes(x = x, y = y)) +
+    # Draw a single vertical bar
+    geom_col(width = 0.6, fill = "lightgrey", color = "black") +
+    # Add vertical text (angle=90)
+    annotate("text", x = 1, y = 0.5, label = label, size = size,
+             angle = 90, size = 6, vjust = 0.5, hjust = 0.5) +
+    # Remove all extra space
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0), limits = c(0, 1)) +
+    theme_void(base_size = 14) +             # no axes, ticks, labels
+    theme(
+        plot.margin = margin(0, 0, 0, 0),      # remove outside margins
+        panel.spacing = unit(0, "pt"),         # remove panel padding
+        plot.background = element_blank(),     # no background
+        panel.background = element_blank()
+    )
+}
+
+## Theme function for the table plots
+custom_tbl_theme <- ttheme(
+  "blank",
+  base_size = 5,  # Increased for scaling height
+  padding = unit(c(1, 2), "mm"),  # Small horizontal, larger vertical padding to expand row heights; adjust vertical as needed
+  tbody.style = tbody_style(
+    color = "black",
+    fill = cbind(rep(c("white", "grey95"), length.out = 10), rep(c("white", "grey95"), length.out = 10)),
+    hjust = 0,  # Left align body text
+    x = 0.02,   # Adjust horizontal position for left alignment
+    fontsize = 5  # Increased for scaling height
+  ),
+  colnames.style = colnames_style(
+    color = "transparent",  # Make column names invisible to remove header
+    fill = "white",
+    fontsize = 0  # Set font size to 0 to effectively hide
+  )
+)
+
+```
+
+
+```{r}
+
+# Concordance = 100*Sum(rowMax)/N
+
+# Best pals from ggsci: pal_npg (10), pal_d3 (20), pal_ucscgb (26), pal_igv (51)
+
+plotthis::palette_list %>% names()
+
+# NPG colors:
+# "#E64B35FF" "#4DBBD5FF" "#00A087FF" "#3C5488FF" "#F39B7FFF" "#8491B4FF" "#91D1C2FF" "#DC0000FF" "#7E6148FF" "#B09C85FF"
+
+# "#5050FFFF" "#CE3D32FF" "#749B58FF" "#F0E685FF" "#466983FF" "#BA6338FF" "#5DB1DDFF" "#802268FF" "#6BD76BFF" "#D595A7FF" "#924822FF" "#837B8DFF" "#C75127FF"
+# "#D58F5CFF" "#7A65A5FF" "#E4AF69FF" "#3B1B53FF" "#CDDEB7FF" "#612A79FF" "#AE1F63FF" "#E7C76FFF" "#5A655EFF" "#CC9900FF" "#99CC00FF" "#A9A9A9FF" "#CC9900FF"
+# "#99CC00FF" "#33CC00FF" "#00CC33FF" "#00CC99FF"
+
+# "#A6CEE3" "#1F78B4" "#B2DF8A" "#33A02C" "#FDBF6F" "#FF7F00" "#FB9A99" "#E31A1C" "#CAB2D6" "#6A3D9A" "#FFFF99" "#B15928"
+
+# Define the color palettes
+
+npg_pal <- ggsci::pal_npg()(10)
+npg_reverse_pal <- rev(ggsci::pal_npg("nrc")(10))
+
+```
+
+# Cancer vs non-cancer benchmarking
+
+## GSE72056 Melanoma
+
+The dataset was downloaded from https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE72056
+https://pmc.ncbi.nlm.nih.gov/articles/PMC4944528/
+
+```{r}
+
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+
+GSE72056_data <- read_delim("../../../Benchmarking/Test Datasets/GSE72056/GSE72056_melanoma_single_cell_revised_v2.txt.gz", delim = "\t")
+
+GSE72056_metadata <- GSE72056_data[c(1:3),] %>% t() %>% as.data.frame()
+colnames(GSE72056_metadata) <- GSE72056_metadata[1,]
+GSE72056_metadata <- GSE72056_metadata[-1, ]
+
+GSE72056_data <- GSE72056_data[-c(1:3), ]
+GSE72056_data_rownames <- paste(GSE72056_data$Cell, seq(nrow(GSE72056_data)), sep = "")
+
+GSE72056_rowNames_geneNames <- data.frame(Gene = GSE72056_data$Cell, Rowname = GSE72056_data_rownames)
+qs2::qs_save(object = GSE72056_rowNames_geneNames, file = "../../../Benchmarking/Test Datasets/GSE72056/GSE72056_rowNames_geneNames.qs2")
+
+GSE72056_data <- GSE72056_data[, -1]
+rownames(GSE72056_data) <- GSE72056_data_rownames
+
+all(colnames(GSE72056_data_rownames) == rownames(GSE72056_metadata)) # T
+
+GSE72056_so <- CreateSeuratObject(
+    counts = GSE72056_data, 
+    meta.data = GSE72056_metadata,
+    project = "GSE72056",
+    min.cells = 3,
+    min.features = 200
+  )
+
+GSE72056_so@meta.data %>% view()
+unique(GSE72056_so$`malignant(1=no,2=yes,0=unresolved)`)
+GSE72056_so$`malignant(1=no,2=yes,0=unresolved)` <- gsub(" ", "", GSE72056_so$`malignant(1=no,2=yes,0=unresolved)`)
+GSE72056_so$`malignant(1=no,2=yes,0=unresolved)` <- as.integer(GSE72056_so$`malignant(1=no,2=yes,0=unresolved)`)
+
+# Filtering out unresolved cells
+GSE72056_so <- GSE72056_so[, GSE72056_so$`malignant(1=no,2=yes,0=unresolved)` != 0]
+GSE72056_so$Condition <- GSE72056_so$`malignant(1=no,2=yes,0=unresolved)`
+
+# Dataset is already normalized
+# GSE72056_so <- NormalizeData(GSE72056_so, normalization.method = "LogNormalize", scale.factor = 10000)
+GSE72056_so@assays$RNA$data <- GSE72056_so@assays$RNA$counts
+
+# Identification of highly variable features (feature selection)
+GSE72056_so <- FindVariableFeatures(GSE72056_so, selection.method = "vst", nfeatures = 2000)
+
+# Scaling the data
+GSE72056_so <- ScaleData(GSE72056_so, features = VariableFeatures(GSE72056_so))
+
+# Perform linear dimensional reduction
+GSE72056_so <- RunPCA(GSE72056_so, features = VariableFeatures(object = GSE72056_so))
+
+# Elbow plot
+ElbowPlot(GSE72056_so)
+
+# Run non-linear dimensional reduction (UMAP/tSNE)
+GSE72056_so <- RunUMAP(GSE72056_so, dims = 1:10)
+
+DimPlot(GSE72056_so, group.by = "Condition")
+
+#_______________________________________________
+
+GSE72056_so_ClustoCell <- clustoCell(data = GSE72056_so, assay = "RNA", layer = "data", log1p = F, 
+                                     identify_subclusters = F,
+                                     high_quantile = 0.25, low_quantile = 0.25, leiden_resolution = 0.1,
+                                     subset_to_HVG = F, seed = 121)
+
+GSE72056_so <- addClustoData(obj = GSE72056_so, clustoCell = GSE72056_so_ClustoCell, 
+                             add_sub_clusters = F, major_cluster_name = "ClustoCell")
+
+DimPlot(GSE72056_so, group.by = "ClustoCell")
+
+#_____________________
+
+# Confusion matrix
+
+GSE72056_ClustoCell_vs_manual_cellType <- table(ClustoCell = GSE72056_so$ClustoCell, 
+                                                manual = GSE72056_so$Condition)
+
+GSE72056_ClustoCell_vs_manual_cellType_maxOverlap <- round(((GSE72056_ClustoCell_vs_manual_cellType %>% apply(1, max) %>% sum())/ncol(GSE72056_so))*100) # 95%
+
+#_____________________
+
+## Saving the obj after preprocessing as a qs obj
+qs2::qs_save(object = GSE72056_so, 
+             file = "../../../Benchmarking/Test Datasets/GSE72056/GSE72056_so.qs2")
+
+GSE72056_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE72056/GSE72056_so.qs2")
+GSE72056_rowNames_geneNames <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE72056/GSE72056_rowNames_geneNames.qs2")
+
+```
+
+## GSE111672 Pancreatic ductal adenocarcinomas
+
+The dataset was downloaded from https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE111672
+https://www.nature.com/articles/s41587-019-0392-8#Sec2
+
+### PDAC-A
+  
+```{r}
+
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+
+GSE111672_A_data <- read_delim("../../../Benchmarking/Test Datasets/GSE111672/GSE111672_PDAC-A-indrop-filtered-expMat.txt.gz", delim = "\t")
+GSE111672_A_data_genes <- GSE111672_A_data$Genes
+GSE111672_A_data <- GSE111672_A_data[,-1]
+
+GSE111672_A_metadata <- data.frame(CellType = sapply(colnames(GSE111672_A_data), function(i) unlist(str_split(string = i, pattern = " "))[1]))
+GSE111672_A_metadata$CellType[grep("pDCs", GSE111672_A_metadata$CellType)] <- "pDCs"
+GSE111672_A_metadata$CellType[grep("RBCs", GSE111672_A_metadata$CellType)] <- "RBCs"
+GSE111672_A_metadata$CellType[grep("Monocytes", GSE111672_A_metadata$CellType)] <- "Monocytes"
+GSE111672_A_metadata$CellType[grep("Fibroblasts", GSE111672_A_metadata$CellType)] <- "Fibroblasts"
+
+rownames(GSE111672_A_metadata) <- colnames(GSE111672_A_data)
+
+rownames(GSE111672_A_data) <- paste(GSE111672_A_data_genes, seq(nrow(GSE111672_A_data)), sep = "")
+
+GSE111672_A_rowNames_geneNames <- data.frame(Gene = GSE111672_A_data_genes, Rowname = rownames(GSE111672_A_data))
+qs2::qs_save(object = GSE111672_A_rowNames_geneNames, file = "../../../Benchmarking/Test Datasets/GSE111672/GSE111672_A_rowNames_geneNames.qs2")
+
+all(colnames(GSE111672_A_data) == rownames(GSE111672_A_metadata)) # T
+
+GSE111672_A_so <- CreateSeuratObject(
+  counts = GSE111672_A_data, 
+  meta.data = GSE111672_A_metadata,
+  project = "GSE111672",
+  min.cells = 3,
+  min.features = 200
+)
+
+GSE111672_A_so <- NormalizeData(GSE111672_A_so, normalization.method = "LogNormalize", scale.factor = 10000)
+
+# Identification of highly variable features (feature selection)
+GSE111672_A_so <- FindVariableFeatures(GSE111672_A_so, selection.method = "vst", nfeatures = 2000)
+
+# Scaling the data
+GSE111672_A_so <- ScaleData(GSE111672_A_so, features = VariableFeatures(GSE111672_A_so))
+
+# Perform linear dimensional reduction
+GSE111672_A_so <- RunPCA(GSE111672_A_so, features = VariableFeatures(object = GSE111672_A_so))
+
+# Elbow plot
+ElbowPlot(GSE111672_A_so)
+
+# Run non-linear dimensional reduction (UMAP/tSNE)
+GSE111672_A_so <- RunUMAP(GSE111672_A_so, dims = 1:16)
+
+GSE111672_A_so$Condition <- ifelse(GSE111672_A_so$CellType == "Cancer", "Cancer", "Normal")
+DimPlot(GSE111672_A_so, group.by = "Condition")
+
+#_______________________________________________
+
+GSE111672_A_so_ClustoCell <- clustoCell(data = GSE111672_A_so, log1p = T, 
+                                     identify_subclusters = F,
+                                     high_quantile = 0.25, low_quantile = 0.25, leiden_resolution = 0.1,
+                                     subset_to_HVG = F, seed = 121)
+
+GSE111672_A_so <- addClustoData(obj = GSE111672_A_so, clustoCell = GSE111672_A_so_ClustoCell, 
+                             add_sub_clusters = F, major_cluster_name = "ClustoCell")
+
+DimPlot(GSE111672_A_so, group.by = c("Condition", "CellType", "ClustoCell"))
+
+#_____________________
+
+## Saving the obj after preprocessing as a qs obj
+qs2::qs_save(object = GSE111672_A_so, 
+             file = "../../../Benchmarking/Test Datasets/GSE111672/GSE111672_A_so.qs2")
+
+GSE111672_A_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE111672/GSE111672_A_so.qs2")
+
+GSE111672_A_rowNames_geneNames <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE111672/GSE111672_A_rowNames_geneNames.qs2")
+
+#_____________________
+
+# Subset to only the cluster that correspond to epithelial cells (including cancer and normal epithelial cells)
+GSE111672_A_so <- subset(GSE111672_A_so, subset = ClustoCell %in% c("C1"))
+
+#_______________________________________________
+
+# Rerunning the ClustoCell on the epithelial subset identified by ClustoCell
+
+GSE111672_A_so_ClustoCell <- clustoCell(data = GSE111672_A_so, log1p = T, 
+                                     identify_subclusters = F,
+                                     high_quantile = 0.25, low_quantile = 0.25, leiden_resolution = 0.2,
+                                     subset_to_HVG = F, seed = 121)
+
+GSE111672_A_so <- addClustoData(obj = GSE111672_A_so, clustoCell = GSE111672_A_so_ClustoCell, 
+                             add_sub_clusters = F, major_cluster_name = "ClustoCell")
+
+DimPlot(GSE111672_A_so, group.by = c("Condition", "ClustoCell"))
+
+#_____________________
+
+# Confusion matrix
+
+GSE111672_A_ClustoCell_vs_manual_cellType <- table(ClustoCell = GSE111672_A_so$ClustoCell, 
+                                                   manual = GSE111672_A_so$Condition)
+
+GSE111672_A_ClustoCell_vs_manual_cellType_maxOverlap <- round(((GSE111672_A_ClustoCell_vs_manual_cellType %>% apply(1, max) %>% sum())/ncol(GSE111672_A_so))*100) # 99%
+
+```
+
+### PDAC-B
+
+```{r}
+
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 2)
+
+GSE111672_B_data <- read_delim("../../../Benchmarking/Test Datasets/GSE111672/GSE111672_PDAC-B-indrop-filtered-expMat.txt.gz", delim = "\t")
+GSE111672_B_data_genes <- GSE111672_B_data$Genes
+GSE111672_B_data <- GSE111672_B_data[,-1]
+
+GSE111672_B_metadata <- data.frame(CellType = sapply(colnames(GSE111672_B_data), function(i) unlist(str_split(string = i, pattern = " "))[1]))
+GSE111672_B_metadata$CellType[grep("mDCs", GSE111672_B_metadata$CellType)] <- "mDCs"
+GSE111672_B_metadata$CellType[grep("Macrophages", GSE111672_B_metadata$CellType)] <- "Macrophages"
+GSE111672_B_metadata$CellType[grep("Monocytes", GSE111672_B_metadata$CellType)] <- "Monocytes"
+GSE111672_B_metadata$CellType[grep("RBCs", GSE111672_B_metadata$CellType)] <- "RBCs"
+
+rownames(GSE111672_B_metadata) <- colnames(GSE111672_B_data)
+
+rownames(GSE111672_B_data) <- paste(GSE111672_B_data_genes, seq(nrow(GSE111672_B_data)), sep = "")
+
+GSE111672_B_rowNames_geneNames <- data.frame(Gene = GSE111672_B_data_genes, Rowname = rownames(GSE111672_B_data))
+qs2::qs_save(object = GSE111672_B_rowNames_geneNames, file = "../../../Benchmarking/Test Datasets/GSE111672/GSE111672_B_rowNames_geneNames.qs2")
+
+all(colnames(GSE111672_B_data) == rownames(GSE111672_B_metadata)) # T
+
+GSE111672_B_so <- CreateSeuratObject(
+  counts = GSE111672_B_data, 
+  meta.data = GSE111672_B_metadata,
+  project = "GSE111672",
+  min.cells = 3,
+  min.features = 200
+)
+
+GSE111672_B_so <- NormalizeData(GSE111672_B_so, normalization.method = "LogNormalize", scale.factor = 10000)
+
+# Identification of highly variable features (feature selection)
+GSE111672_B_so <- FindVariableFeatures(GSE111672_B_so, selection.method = "vst", nfeatures = 2000)
+
+# Scaling the data
+GSE111672_B_so <- ScaleData(GSE111672_B_so, features = VariableFeatures(GSE111672_B_so))
+
+# Perform linear dimensional reduction
+GSE111672_B_so <- RunPCA(GSE111672_B_so, features = VariableFeatures(object = GSE111672_B_so))
+
+# Elbow plot
+ElbowPlot(GSE111672_B_so)
+
+# Run non-linear dimensional reduction (UMAP/tSNE)
+GSE111672_B_so <- RunUMAP(GSE111672_B_so, dims = 1:15)
+
+GSE111672_B_so$Condition <- ifelse(GSE111672_B_so$CellType == "Cancer", "Cancer", "Normal")
+DimPlot(GSE111672_B_so, group.by = "Condition")
+
+#_______________________________________________
+
+GSE111672_B_so_ClustoCell <- clustoCell(data = GSE111672_B_so, log1p = T, 
+                                        identify_subclusters = F,
+                                        high_quantile = 0.25, low_quantile = 0.25, leiden_resolution = 0.05,
+                                        subset_to_HVG = F, seed = 121)
+
+GSE111672_B_so <- addClustoData(obj = GSE111672_B_so, clustoCell = GSE111672_B_so_ClustoCell, 
+                                add_sub_clusters = F, major_cluster_name = "ClustoCell")
+
+DimPlot(GSE111672_B_so, group.by = c("Condition", "CellType", "ClustoCell"))
+
+#_____________________
+
+## Saving the obj after preprocessing as a qs obj
+qs2::qs_save(object = GSE111672_B_so, 
+             file = "../../../Benchmarking/Test Datasets/GSE111672/GSE111672_B_so.qs2")
+
+GSE111672_B_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE111672/GSE111672_B_so.qs2")
+GSE111672_B_rowNames_geneNames <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE111672/GSE111672_B_rowNames_geneNames.qs2")
+
+#_____________________
+
+# Subset to only the cluster that correspond to epithelial cells (including cancer and normal epithelial cells)
+GSE111672_B_so <- subset(GSE111672_B_so, subset = ClustoCell %in% c("C1"))
+
+#_______________________________________________
+
+# Rerunning the ClustoCell on the epithelial subset identified by ClustoCell
+
+GSE111672_B_so_ClustoCell <- clustoCell(data = GSE111672_B_so, log1p = T, 
+                                        identify_subclusters = F,
+                                        high_quantile = 0.25, low_quantile = 0.25, leiden_resolution = 0.05,
+                                        subset_to_HVG = F, seed = 121)
+
+GSE111672_B_so <- addClustoData(obj = GSE111672_B_so, clustoCell = GSE111672_B_so_ClustoCell, 
+                                add_sub_clusters = F, major_cluster_name = "ClustoCell")
+
+DimPlot(GSE111672_B_so, group.by = c("Condition", "ClustoCell"))
+
+#_____________________
+
+# Confusion matrix
+
+GSE111672_B_ClustoCell_vs_manual_cellType <- table(ClustoCell = GSE111672_B_so$ClustoCell, 
+                                                   manual = GSE111672_B_so$Condition)
+
+GSE111672_B_ClustoCell_vs_manual_cellType_maxOverlap <- round(((GSE111672_B_ClustoCell_vs_manual_cellType %>% apply(1, max) %>% sum())/ncol(GSE111672_B_so))*100) # 99%
+
+```
+
+## GSE115978 Melanoma
+
+The dataset was downloaded from https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE115978
+https://pmc.ncbi.nlm.nih.gov/articles/PMC6410377/
+  
+```{r}
+
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 100)
+
+GSE115978_data <- read_delim("../../../Benchmarking/Test Datasets/GSE115978/GSE115978_counts.csv.gz", delim = ",")
+GSE115978_genes <- GSE115978_data$...1
+GSE115978_data <- GSE115978_data[,-1]
+
+GSE115978_metadata <- read_delim("../../../Benchmarking/Test Datasets/GSE115978/GSE115978_cell.annotations.csv.gz", delim = ",")
+
+# remove unknown cells
+GSE115978_metadata <- GSE115978_metadata[-which(GSE115978_metadata$cell.types == "?"),]
+GSE115978_metadata$Condition <- ifelse(GSE115978_metadata$cell.types == "Mal", "Cancer", "Normal")
+
+rownames(GSE115978_metadata) <- GSE115978_metadata$cells
+
+all(rownames(GSE115978_metadata) %in% colnames(GSE115978_data)) # T
+GSE115978_data <- GSE115978_data[,rownames(GSE115978_metadata)]
+all(rownames(GSE115978_metadata) == colnames(GSE115978_data)) # T
+
+rownames(GSE115978_data) <- GSE115978_genes
+
+GSE115978_so <- CreateSeuratObject(
+  counts = GSE115978_data, 
+  meta.data = GSE115978_metadata,
+  project = "GSE115978",
+  min.cells = 3,
+  min.features = 200
+)
+
+GSE115978_so@meta.data <- cbind(GSE115978_so@meta.data, GSE115978_metadata)
+
+GSE115978_so <- NormalizeData(GSE115978_so, normalization.method = "LogNormalize", scale.factor = 10000)
+
+# Identification of highly variable features (feature selection)
+GSE115978_so <- FindVariableFeatures(GSE115978_so, selection.method = "vst", nfeatures = 2000)
+
+# Scaling the data
+GSE115978_so <- ScaleData(GSE115978_so, features = VariableFeatures(GSE115978_so))
+
+# Perform linear dimensional reduction
+GSE115978_so <- RunPCA(GSE115978_so, features = VariableFeatures(object = GSE115978_so))
+
+# Elbow plot
+ElbowPlot(GSE115978_so)
+
+# Run non-linear dimensional reduction (UMAP/tSNE)
+GSE115978_so <- RunUMAP(GSE115978_so, dims = 1:13)
+
+DimPlot(GSE115978_so, group.by = "Condition")
+
+#_______________________________________________
+
+GSE115978_so_ClustoCell <- clustoCell(data = GSE115978_so, assay = "RNA", layer = "count", log1p = T, 
+                                      identify_subclusters = F, 
+                                      high_quantile = 0.25, low_quantile = 0.25, leiden_resolution = 0.2,
+                                      subset_to_HVG = F, seed = 121)
+
+GSE115978_so <- addClustoData(obj = GSE115978_so, clustoCell = GSE115978_so_ClustoCell, 
+                              add_sub_clusters = F, major_cluster_name = "ClustoCell")
+
+DimPlot(GSE115978_so, group.by = "ClustoCell")
+
+#_____________________
+
+# Confusion matrix
+
+GSE115978_ClustoCell_vs_manual_cellType <- table(ClustoCell = GSE115978_so$ClustoCell, 
+                                                 manual = GSE115978_so$Condition)
+
+GSE115978_ClustoCell_vs_manual_cellType_maxOverlap <- round(((GSE115978_ClustoCell_vs_manual_cellType %>% apply(1, max) %>% sum())/ncol(GSE115978_so))*100) # 91%
+
+#_____________________
+
+## Saving the obj after preprocessing as a qs obj
+qs2::qs_save(object = GSE115978_so, 
+             file = "../../../Benchmarking/Test Datasets/GSE115978/GSE115978_so.qs2")
+
+GSE115978_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE115978/GSE115978_so.qs2")
+
+```
+
+## GSE131928 Glioblastoma
+
+The dataset was downloaded from https://tisch.compbio.cn/
+https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE131928
+https://pubmed.ncbi.nlm.nih.gov/31327527/
+  
+```{r}
+
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 100)
+
+GSE131928_data <- Seurat::Read10X_h5("../../../Benchmarking/Test Datasets/GSE131928/Glioma_GSE131928_10X_expression.h5")
+
+GSE131928_metadata <- read_delim("../../../Benchmarking/Test Datasets/GSE131928/Glioma_GSE131928_10X_CellMetainfo_table.tsv", delim = "\t")
+rownames(GSE131928_metadata) <- GSE131928_metadata$Cell
+
+all(rownames(GSE131928_metadata) %in% colnames(GSE131928_data)) # T
+all(rownames(GSE131928_metadata) == colnames(GSE131928_data)) # T
+
+GSE131928_so <- CreateSeuratObject(
+  counts = GSE131928_data, 
+  meta.data = GSE131928_metadata,
+  project = "GSE131928",
+  min.cells = 3,
+  min.features = 200
+)
+
+GSE131928_so@meta.data <- cbind(GSE131928_so@meta.data, GSE131928_metadata)
+GSE131928_so$Condition <- ifelse(GSE131928_so$`Celltype (malignancy)` == "Malignant cells", "Cancer", "Normal")
+
+# The data is already normalized
+# GSE131928_so <- NormalizeData(GSE131928_so, normalization.method = "LogNormalize", scale.factor = 10000)
+GSE131928_so@assays$RNA$data <- GSE131928_so@assays$RNA$counts
+
+# Identification of highly variable features (feature selection)
+GSE131928_so <- FindVariableFeatures(GSE131928_so, selection.method = "vst", nfeatures = 2000)
+
+# Scaling the data
+GSE131928_so <- ScaleData(GSE131928_so, features = VariableFeatures(GSE131928_so))
+
+# Perform linear dimensional reduction
+GSE131928_so <- RunPCA(GSE131928_so, features = VariableFeatures(object = GSE131928_so))
+
+# Elbow plot
+ElbowPlot(GSE131928_so)
+
+# Run non-linear dimensional reduction (UMAP/tSNE)
+GSE131928_so <- RunUMAP(GSE131928_so, dims = 1:15)
+
+DimPlot(GSE131928_so, group.by = "Condition")
+
+#_______________________________________________
+
+GSE131928_so_ClustoCell <- clustoCell(data = GSE131928_so, assay = "RNA", layer = "data", log1p = F, 
+                                      identify_subclusters = F, 
+                                      high_quantile = 0.25, low_quantile = 0.25, leiden_resolution = 0.02,
+                                      subset_to_HVG = F, seed = 121)
+
+GSE131928_so <- addClustoData(obj = GSE131928_so, clustoCell = GSE131928_so_ClustoCell, 
+                              add_sub_clusters = F, major_cluster_name = "ClustoCell")
+
+DimPlot(GSE131928_so, group.by = "ClustoCell")
+
+#_____________________
+
+# Confusion matrix
+
+GSE131928_ClustoCell_vs_manual_cellType <- table(ClustoCell = GSE131928_so$ClustoCell, 
+                                                 manual = GSE131928_so$Condition)
+
+GSE131928_ClustoCell_vs_manual_cellType_maxOverlap <- round(((GSE131928_ClustoCell_vs_manual_cellType %>% apply(1, max) %>% sum())/ncol(GSE131928_so))*100) # 92%
+
+#_____________________
+
+## Saving the obj after preprocessing as a qs obj
+qs2::qs_save(object = GSE131928_so, 
+             file = "../../../Benchmarking/Test Datasets/GSE131928/GSE131928_so.qs2")
+
+GSE131928_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE131928/GSE131928_so.qs2")
+
+```
+
+## GSE142213 AEL
+
+The dataset was downloaded from https://tisch.compbio.cn/
+https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE142213
+https://pubmed.ncbi.nlm.nih.gov/32330454/
+  
+```{r}
+
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 100)
+
+GSE142213_data <- Seurat::Read10X_h5("../../../Benchmarking/Test Datasets/GSE142213/AEL_GSE142213_expression.h5")
+
+GSE142213_metadata <- read_delim("../../../Benchmarking/Test Datasets/GSE142213/AEL_GSE142213_CellMetainfo_table.tsv", delim = "\t")
+rownames(GSE142213_metadata) <- GSE142213_metadata$Cell
+
+all(rownames(GSE142213_metadata) %in% colnames(GSE142213_data)) # T
+all(rownames(GSE142213_metadata) == colnames(GSE142213_data)) # T
+
+GSE142213_so <- CreateSeuratObject(
+  counts = GSE142213_data, 
+  meta.data = GSE142213_metadata,
+  project = "GSE142213",
+  min.cells = 3,
+  min.features = 200
+)
+
+GSE142213_so@meta.data <- cbind(GSE142213_so@meta.data, GSE142213_metadata)
+GSE142213_so$Condition <- ifelse(GSE142213_so$`Celltype (malignancy)` == "Malignant cells", "Cancer", "Normal")
+
+# The data is already normalized
+# GSE142213_so <- NormalizeData(GSE142213_so, normalization.method = "LogNormalize", scale.factor = 10000)
+GSE142213_so@assays$RNA$data <- GSE142213_so@assays$RNA$counts
+
+# Identification of highly variable features (feature selection)
+GSE142213_so <- FindVariableFeatures(GSE142213_so, selection.method = "vst", nfeatures = 2000)
+
+# Scaling the data
+GSE142213_so <- ScaleData(GSE142213_so, features = VariableFeatures(GSE142213_so))
+
+# Perform linear dimensional reduction
+GSE142213_so <- RunPCA(GSE142213_so, features = VariableFeatures(object = GSE142213_so))
+
+# Elbow plot
+ElbowPlot(GSE142213_so)
+
+# Run non-linear dimensional reduction (UMAP/tSNE)
+GSE142213_so <- RunUMAP(GSE142213_so, dims = 1:11)
+
+DimPlot(GSE142213_so, group.by = "Condition")
+
+#_______________________________________________
+
+GSE142213_so_ClustoCell <- clustoCell(data = GSE142213_so, assay = "RNA", layer = "data", log1p = F, 
+                                      identify_subclusters = F, 
+                                      high_quantile = 0.25, low_quantile = 0.25, leiden_resolution = 0.03,
+                                      subset_to_HVG = F, seed = 121)
+
+GSE142213_so <- addClustoData(obj = GSE142213_so, clustoCell = GSE142213_so_ClustoCell, 
+                              add_sub_clusters = F, major_cluster_name = "ClustoCell")
+
+DimPlot(GSE142213_so, group.by = "ClustoCell")
+
+#_____________________
+
+# Confusion matrix
+
+GSE142213_ClustoCell_vs_manual_cellType <- table(ClustoCell = GSE142213_so$ClustoCell, 
+                                                 manual = GSE142213_so$Condition)
+
+GSE142213_ClustoCell_vs_manual_cellType_maxOverlap <- round(((GSE142213_ClustoCell_vs_manual_cellType %>% apply(1, max) %>% sum())/ncol(GSE142213_so))*100) # 100%
+
+#_____________________
+
+## Saving the obj after preprocessing as a qs obj
+qs2::qs_save(object = GSE142213_so, 
+             file = "../../../Benchmarking/Test Datasets/GSE142213/GSE142213_so.qs2")
+
+GSE142213_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE142213/GSE142213_so.qs2")
+
+```
+
+## GSE154109 ALL
+
+The dataset was downloaded from https://tisch.compbio.cn/
+https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE154109
+https://pubmed.ncbi.nlm.nih.gov/31067475/
+  
+```{r}
+
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 100)
+
+GSE154109_data <- Seurat::Read10X_h5("../../../Benchmarking/Test Datasets/GSE154109/ALL_GSE154109_expression.h5")
+
+GSE154109_metadata <- read_delim("../../../Benchmarking/Test Datasets/GSE154109/ALL_GSE154109_CellMetainfo_table.tsv", delim = "\t")
+rownames(GSE154109_metadata) <- GSE154109_metadata$Cell
+
+all(rownames(GSE154109_metadata) %in% colnames(GSE154109_data)) # T
+all(rownames(GSE154109_metadata) == colnames(GSE154109_data)) # T
+
+GSE154109_so <- CreateSeuratObject(
+  counts = GSE154109_data, 
+  meta.data = GSE154109_metadata,
+  project = "GSE154109",
+  min.cells = 3,
+  min.features = 200
+)
+
+GSE154109_so@meta.data <- cbind(GSE154109_so@meta.data, GSE154109_metadata)
+GSE154109_so$Condition <- ifelse(GSE154109_so$`Celltype (malignancy)` == "Malignant cells", "Cancer", "Normal")
+
+# The data is already normalized
+# GSE154109_so <- NormalizeData(GSE154109_so, normalization.method = "LogNormalize", scale.factor = 10000)
+GSE154109_so@assays$RNA$data <- GSE154109_so@assays$RNA$counts
+
+# Identification of highly variable features (feature selection)
+GSE154109_so <- FindVariableFeatures(GSE154109_so, selection.method = "vst", nfeatures = 2000)
+
+# Scaling the data
+GSE154109_so <- ScaleData(GSE154109_so, features = VariableFeatures(GSE154109_so))
+
+# Perform linear dimensional reduction
+GSE154109_so <- RunPCA(GSE154109_so, features = VariableFeatures(object = GSE154109_so))
+
+# Elbow plot
+ElbowPlot(GSE154109_so)
+
+# Run non-linear dimensional reduction (UMAP/tSNE)
+GSE154109_so <- RunUMAP(GSE154109_so, dims = 1:15)
+
+DimPlot(GSE154109_so, group.by = "Condition")
+
+#_______________________________________________
+
+GSE154109_so_ClustoCell <- clustoCell(data = GSE154109_so, assay = "RNA", layer = "data", log1p = F, 
+                                      identify_subclusters = F, 
+                                      high_quantile = 0.25, low_quantile = 0.25, leiden_resolution = 0.02,
+                                      subset_to_HVG = F, seed = 121)
+
+GSE154109_so <- addClustoData(obj = GSE154109_so, clustoCell = GSE154109_so_ClustoCell, 
+                              add_sub_clusters = F, major_cluster_name = "ClustoCell")
+
+DimPlot(GSE154109_so, group.by = "ClustoCell")
+
+#_____________________
+
+# Confusion matrix
+
+GSE154109_ClustoCell_vs_manual_cellType <- table(ClustoCell = GSE154109_so$ClustoCell, 
+                                                 manual = GSE154109_so$Condition)
+
+GSE154109_ClustoCell_vs_manual_cellType_maxOverlap <- round(((GSE154109_ClustoCell_vs_manual_cellType %>% apply(1, max) %>% sum())/ncol(GSE154109_so))*100) # 96%
+
+#_____________________
+
+## Saving the obj after preprocessing as a qs obj
+qs2::qs_save(object = GSE154109_so, 
+             file = "../../../Benchmarking/Test Datasets/GSE154109/GSE154109_so.qs2")
+
+GSE154109_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE154109/GSE154109_so.qs2")
+
+```
+
+## GSE150766 SCLC
+
+The dataset was downloaded from https://tisch.compbio.cn/
+https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE150766
+https://pubmed.ncbi.nlm.nih.gov/34016693/
+  
+```{r}
+
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 100)
+
+GSE150766_data <- Seurat::Read10X_h5("../../../Benchmarking/Test Datasets/GSE150766/SCLC_GSE150766_expression.h5")
+
+GSE150766_metadata <- read_delim("../../../Benchmarking/Test Datasets/GSE150766/SCLC_GSE150766_CellMetainfo_table.tsv", delim = "\t")
+rownames(GSE150766_metadata) <- GSE150766_metadata$Cell
+
+all(rownames(GSE150766_metadata) %in% colnames(GSE150766_data)) # T
+all(rownames(GSE150766_metadata) == colnames(GSE150766_data)) # T
+
+GSE150766_so <- CreateSeuratObject(
+  counts = GSE150766_data, 
+  meta.data = GSE150766_metadata,
+  project = "GSE150766",
+  min.cells = 3,
+  min.features = 200
+)
+
+GSE150766_so@meta.data <- cbind(GSE150766_so@meta.data, GSE150766_metadata)
+GSE150766_so$Condition <- ifelse(GSE150766_so$`Celltype (malignancy)` == "Malignant cells", "Cancer", "Normal")
+
+# The data is already normalized
+# GSE150766_so <- NormalizeData(GSE150766_so, normalization.method = "LogNormalize", scale.factor = 10000)
+GSE150766_so@assays$RNA$data <- GSE150766_so@assays$RNA$counts
+
+# Identification of highly variable features (feature selection)
+GSE150766_so <- FindVariableFeatures(GSE150766_so, selection.method = "vst", nfeatures = 2000)
+
+# Scaling the data
+GSE150766_so <- ScaleData(GSE150766_so, features = VariableFeatures(GSE150766_so))
+
+# Perform linear dimensional reduction
+GSE150766_so <- RunPCA(GSE150766_so, features = VariableFeatures(object = GSE150766_so))
+
+# Elbow plot
+ElbowPlot(GSE150766_so)
+
+# Run non-linear dimensional reduction (UMAP/tSNE)
+GSE150766_so <- RunUMAP(GSE150766_so, dims = 1:10)
+
+DimPlot(GSE150766_so, group.by = "Condition")
+
+#_______________________________________________
+
+GSE150766_so_ClustoCell <- clustoCell(data = GSE150766_so, assay = "RNA", layer = "data", log1p = F, 
+                                      identify_subclusters = F, 
+                                      high_quantile = 0.25, low_quantile = 0.25, leiden_resolution = 0.01,
+                                      subset_to_HVG = F, seed = 121)
+
+qs2::qs_save(object = GSE150766_so_ClustoCell, 
+             file = "../../../Benchmarking/Test Datasets/GSE150766/GSE150766_so_ClustoCell.qs2")
+
+GSE150766_so <- addClustoData(obj = GSE150766_so, clustoCell = GSE150766_so_ClustoCell, 
+                              add_sub_clusters = F, major_cluster_name = "ClustoCell")
+
+DimPlot(GSE150766_so, group.by = "ClustoCell")
+
+#_____________________
+
+# Confusion matrix
+
+GSE150766_ClustoCell_vs_manual_cellType <- table(ClustoCell = GSE150766_so$ClustoCell, 
+                                                 manual = GSE150766_so$Condition)
+
+GSE150766_ClustoCell_vs_manual_cellType_maxOverlap <- round(((GSE150766_ClustoCell_vs_manual_cellType %>% apply(1, max) %>% sum())/ncol(GSE150766_so))*100) # 97%
+
+#_____________________
+
+## Saving the obj after preprocessing as a qs obj
+qs2::qs_save(object = GSE150766_so, 
+             file = "../../../Benchmarking/Test Datasets/GSE150766/GSE150766_so.qs2")
+
+GSE150766_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE150766/GSE150766_so.qs2")
+
+GSE150766_so_ClustoCell <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE150766/GSE150766_so_ClustoCell.qs2")
+
+```
+
+## GSE146409 LIHC
+
+The dataset was downloaded from https://tisch.compbio.cn/
+https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE146409
+https://pmc.ncbi.nlm.nih.gov/articles/PMC7746227/
+  
+```{r}
+
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 100)
+
+GSE146409_data <- Seurat::Read10X_h5("../../../Benchmarking/Test Datasets/GSE146409/LIHC_GSE146409_expression.h5")
+
+GSE146409_metadata <- read_delim("../../../Benchmarking/Test Datasets/GSE146409/LIHC_GSE146409_CellMetainfo_table.tsv", delim = "\t")
+rownames(GSE146409_metadata) <- GSE146409_metadata$Cell
+
+all(rownames(GSE146409_metadata) %in% colnames(GSE146409_data)) # T
+all(rownames(GSE146409_metadata) == colnames(GSE146409_data)) # T
+
+GSE146409_so <- CreateSeuratObject(
+  counts = GSE146409_data, 
+  meta.data = GSE146409_metadata,
+  project = "GSE146409",
+  min.cells = 3,
+  min.features = 200
+)
+
+GSE146409_so@meta.data <- cbind(GSE146409_so@meta.data, GSE146409_metadata)
+
+GSE146409_so$Condition <- ifelse(GSE146409_so$`Celltype (malignancy)` == "Malignant cells", "Cancer", "Normal")
+
+# The data is already normalized
+# GSE146409_so <- NormalizeData(GSE146409_so, normalization.method = "LogNormalize", scale.factor = 10000)
+GSE146409_so@assays$RNA$data <- GSE146409_so@assays$RNA$counts
+
+# Identification of highly variable features (feature selection)
+GSE146409_so <- FindVariableFeatures(GSE146409_so, selection.method = "vst", nfeatures = 2000)
+
+# Scaling the data
+GSE146409_so <- ScaleData(GSE146409_so, features = VariableFeatures(GSE146409_so))
+
+# Perform linear dimensional reduction
+GSE146409_so <- RunPCA(GSE146409_so, features = VariableFeatures(object = GSE146409_so))
+
+# Elbow plot
+ElbowPlot(GSE146409_so)
+
+# Run non-linear dimensional reduction (UMAP/tSNE)
+GSE146409_so <- RunUMAP(GSE146409_so, dims = 1:12)
+
+DimPlot(GSE146409_so, group.by = "Condition")
+
+#_______________________________________________
+
+GSE146409_so_ClustoCell <- clustoCell(data = GSE146409_so, assay = "RNA", layer = "data", log1p = F, 
+                                      identify_subclusters = F, 
+                                      high_quantile = 0.25, low_quantile = 0.25, leiden_resolution = 0.1,
+                                      subset_to_HVG = F, seed = 121)
+
+GSE146409_so <- addClustoData(obj = GSE146409_so, clustoCell = GSE146409_so_ClustoCell, 
+                              add_sub_clusters = F, major_cluster_name = "ClustoCell")
+
+DimPlot(GSE146409_so, group.by = c("Condition", "Celltype (major-lineage)", "ClustoCell"))
+
+#_____________________
+
+## Saving the obj after preprocessing as a qs obj
+qs2::qs_save(object = GSE146409_so, 
+             file = "../../../Benchmarking/Test Datasets/GSE146409/GSE146409_so.qs2")
+
+GSE146409_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE146409/GSE146409_so.qs2")
+
+#_____________________
+
+# Subset to only the cluster that correspond to epithelial cells (including cancer and normal epithelial cells (hepatocystes and epithelial))
+GSE146409_so <- subset(GSE146409_so, subset = ClustoCell %in% c("C4"))
+
+#_______________________________________________
+
+# Rerunning the ClustoCell on the epithelial subset identified by ClustoCell
+GSE146409_so_ClustoCell <- clustoCell(data = GSE146409_so, assay = "RNA", layer = "data", log1p = F, 
+                                      identify_subclusters = F, 
+                                      high_quantile = 0.25, low_quantile = 0.25, leiden_resolution = 0.09,
+                                      subset_to_HVG = F, seed = 121)
+
+GSE146409_so <- addClustoData(obj = GSE146409_so, clustoCell = GSE146409_so_ClustoCell, 
+                              add_sub_clusters = F, major_cluster_name = "ClustoCell")
+
+DimPlot(GSE146409_so, group.by = c("Condition", "Celltype (major-lineage)", "ClustoCell"))
+
+#_____________________
+
+# Confusion matrix
+
+GSE146409_ClustoCell_vs_manual_cellType <- table(ClustoCell = GSE146409_so$ClustoCell, 
+                                                 manual = GSE146409_so$Condition)
+
+GSE146409_ClustoCell_vs_manual_cellType_maxOverlap <- round(((GSE146409_ClustoCell_vs_manual_cellType %>% apply(1, max) %>% sum())/ncol(GSE146409_so))*100) # 99%
+
+```
+
+## GSE146771 CRC
+
+The dataset was downloaded from https://tisch.compbio.cn/
+https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE146771
+https://pubmed.ncbi.nlm.nih.gov/31067475/
+  
+```{r}
+
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 100)
+
+GSE146771_data <- Seurat::Read10X_h5("../../../Benchmarking/Test Datasets/GSE146771/CRC_GSE146771_Smartseq2_expression.h5")
+
+GSE146771_metadata <- read_delim("../../../Benchmarking/Test Datasets/GSE146771/CRC_GSE146771_Smartseq2_CellMetainfo_table.tsv", delim = "\t")
+rownames(GSE146771_metadata) <- GSE146771_metadata$Cell
+
+all(rownames(GSE146771_metadata) %in% colnames(GSE146771_data)) # T
+all(rownames(GSE146771_metadata) == colnames(GSE146771_data)) # T
+
+GSE146771_so <- CreateSeuratObject(
+  counts = GSE146771_data, 
+  meta.data = GSE146771_metadata,
+  project = "GSE146771",
+  min.cells = 3,
+  min.features = 200
+)
+
+GSE146771_so@meta.data <- cbind(GSE146771_so@meta.data, GSE146771_metadata)
+
+GSE146771_so$Condition <- ifelse(GSE146771_so$`Celltype (malignancy)` == "Malignant cells", "Cancer", "Normal")
+
+# The data is already normalized
+# GSE146771_so <- NormalizeData(GSE146771_so, normalization.method = "LogNormalize", scale.factor = 10000)
+GSE146771_so@assays$RNA$data <- GSE146771_so@assays$RNA$counts
+
+# Identification of highly variable features (feature selection)
+GSE146771_so <- FindVariableFeatures(GSE146771_so, selection.method = "vst", nfeatures = 2000)
+
+# Scaling the data
+GSE146771_so <- ScaleData(GSE146771_so, features = VariableFeatures(GSE146771_so))
+
+# Perform linear dimensional reduction
+GSE146771_so <- RunPCA(GSE146771_so, features = VariableFeatures(object = GSE146771_so))
+
+# Elbow plot
+ElbowPlot(GSE146771_so)
+
+# Run non-linear dimensional reduction (UMAP/tSNE)
+GSE146771_so <- RunUMAP(GSE146771_so, dims = 1:18)
+
+DimPlot(GSE146771_so, group.by = "Condition")
+
+#_______________________________________________
+
+GSE146771_so_ClustoCell <- clustoCell(data = GSE146771_so, assay = "RNA", layer = "data", log1p = F, 
+                                      identify_subclusters = F, 
+                                      high_quantile = 0.25, low_quantile = 0.25, leiden_resolution = 0.13,
+                                      subset_to_HVG = F, seed = 121)
+
+GSE146771_so <- addClustoData(obj = GSE146771_so, clustoCell = GSE146771_so_ClustoCell, 
+                              add_sub_clusters = F, major_cluster_name = "ClustoCell")
+
+DimPlot(GSE146771_so, group.by = "ClustoCell")
+
+#_____________________
+
+# Confusion matrix
+
+GSE146771_ClustoCell_vs_manual_cellType <- table(ClustoCell = GSE146771_so$ClustoCell, 
+                                                 manual = GSE146771_so$Condition)
+
+GSE146771_ClustoCell_vs_manual_cellType_maxOverlap <- round(((GSE146771_ClustoCell_vs_manual_cellType %>% apply(1, max) %>% sum())/ncol(GSE146771_so))*100) # 91%
+
+#_____________________
+
+## Saving the obj after preprocessing as a qs obj
+qs2::qs_save(object = GSE146771_so, 
+             file = "../../../Benchmarking/Test Datasets/GSE146771/GSE146771_so.qs2")
+
+GSE146771_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE146771/GSE146771_so.qs2")
+
+```
+
+## GSE159115 KICH
+
+The dataset was downloaded from https://tisch.compbio.cn/
+https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE159115
+https://pubmed.ncbi.nlm.nih.gov/31067475/
+  
+```{r}
+
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 100)
+
+GSE159115_data <- Seurat::Read10X_h5("../../../Benchmarking/Test Datasets/GSE159115/KICH_GSE159115_expression.h5")
+
+GSE159115_metadata <- read_delim("../../../Benchmarking/Test Datasets/GSE159115/KICH_GSE159115_CellMetainfo_table.tsv", delim = "\t")
+rownames(GSE159115_metadata) <- GSE159115_metadata$Cell
+
+all(rownames(GSE159115_metadata) %in% colnames(GSE159115_data)) # T
+all(rownames(GSE159115_metadata) == colnames(GSE159115_data)) # T
+
+GSE159115_so <- CreateSeuratObject(
+  counts = GSE159115_data, 
+  meta.data = GSE159115_metadata,
+  project = "GSE159115",
+  min.cells = 3,
+  min.features = 200
+)
+
+GSE159115_so@meta.data <- cbind(GSE159115_so@meta.data, GSE159115_metadata)
+
+GSE159115_so$Condition <- ifelse(GSE159115_so$`Celltype (malignancy)` == "Malignant cells", "Cancer", "Normal")
+
+# The data is already normalized
+# GSE159115_so <- NormalizeData(GSE159115_so, normalization.method = "LogNormalize", scale.factor = 10000)
+GSE159115_so@assays$RNA$data <- GSE159115_so@assays$RNA$counts
+
+# Identification of highly variable features (feature selection)
+GSE159115_so <- FindVariableFeatures(GSE159115_so, selection.method = "vst", nfeatures = 2000)
+
+# Scaling the data
+GSE159115_so <- ScaleData(GSE159115_so, features = VariableFeatures(GSE159115_so))
+
+# Perform linear dimensional reduction
+GSE159115_so <- RunPCA(GSE159115_so, features = VariableFeatures(object = GSE159115_so))
+
+# Elbow plot
+ElbowPlot(GSE159115_so)
+
+# Run non-linear dimensional reduction (UMAP/tSNE)
+GSE159115_so <- RunUMAP(GSE159115_so, dims = 1:12)
+
+DimPlot(GSE159115_so, group.by = "Condition")
+
+#_______________________________________________
+
+GSE159115_so_ClustoCell <- clustoCell(data = GSE159115_so, assay = "RNA", layer = "data", log1p = F, 
+                                      identify_subclusters = F, 
+                                      high_quantile = 0.25, low_quantile = 0.25, leiden_resolution = 0.1,
+                                      subset_to_HVG = F, seed = 121)
+
+GSE159115_so <- addClustoData(obj = GSE159115_so, clustoCell = GSE159115_so_ClustoCell, 
+                              add_sub_clusters = F, major_cluster_name = "ClustoCell")
+
+DimPlot(GSE159115_so, group.by = "ClustoCell")
+
+#_____________________
+
+# Confusion matrix
+
+GSE159115_ClustoCell_vs_manual_cellType <- table(ClustoCell = GSE159115_so$ClustoCell, 
+                                                 manual = GSE159115_so$Condition)
+
+GSE159115_ClustoCell_vs_manual_cellType_maxOverlap <- round(((GSE159115_ClustoCell_vs_manual_cellType %>% apply(1, max) %>% sum())/ncol(GSE159115_so))*100) # 95%
+
+#_____________________
+
+## Saving the obj after preprocessing as a qs obj
+qs2::qs_save(object = GSE159115_so, 
+             file = "../../../Benchmarking/Test Datasets/GSE159115/GSE159115_so.qs2")
+
+GSE159115_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE159115/GSE159115_so.qs2")
+
+```
+
+## HNSCC
+
+The data was downloaded from https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE103322
+https://pmc.ncbi.nlm.nih.gov/articles/PMC5878932/
+
+
+For this type of classification (normal vs cancer): using resolution  = 0.1 KNN finds 9 clusters, and we should go to resolution  = 0.001 to be able to get two clusters and even in that case the concordance with manual annotations is 72%
+
+```{r}
+
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 100)
+hnscc_GSE103322_counts <- readr::read_delim("../../../Benchmarking/Test Datasets/GSE103322/GSE103322_HNSCC_all_data.txt.gz")
+hnscc_GSE103322_metadata <- hnscc_GSE103322_counts[c(1:5),]
+hnscc_GSE103322_metadata <- hnscc_GSE103322_metadata %>% column_to_rownames("...1") %>% t() %>% as.data.frame()
+hnscc_GSE103322_counts <- hnscc_GSE103322_counts[-c(1:5),]
+hnscc_GSE103322_counts <- hnscc_GSE103322_counts %>% column_to_rownames("...1")
+rownames(hnscc_GSE103322_counts) <- gsub("^'|'$", "", rownames(hnscc_GSE103322_counts))
+
+hnscc_GSE103322_so <- CreateSeuratObject(hnscc_GSE103322_counts, meta.data = hnscc_GSE103322_metadata)
+hnscc_GSE103322_so[["RNA"]]$data <- hnscc_GSE103322_so[["RNA"]]$counts
+
+# hnscc_GSE103322_so <- NormalizeData(hnscc_GSE103322_so, normalization.method = "LogNormalize", scale.factor = 10000)
+hnscc_GSE103322_so <- FindVariableFeatures(hnscc_GSE103322_so, selection.method = "vst", nfeatures = 2000)
+hnscc_GSE103322_so <- ScaleData(hnscc_GSE103322_so, features = VariableFeatures(hnscc_GSE103322_so))
+hnscc_GSE103322_so <- RunPCA(hnscc_GSE103322_so, features = VariableFeatures(object = hnscc_GSE103322_so))
+ElbowPlot(hnscc_GSE103322_so, ndims = 50)
+hnscc_GSE103322_so <- FindNeighbors(hnscc_GSE103322_so, dims = 1:20)
+hnscc_GSE103322_so <- FindClusters(hnscc_GSE103322_so, resolution = 0.5)
+hnscc_GSE103322_so <- RunUMAP(hnscc_GSE103322_so, dims = 1:20)
+
+hnscc_GSE103322_so_ClustoCell <- clustoCell(data = hnscc_GSE103322_so, assay = "RNA", layer = "data", log1p = F,
+                                            high_quantile = 0.25, low_quantile = 0.25, leiden_resolution = 0.1,
+                                            subset_to_HVG = F, seed = 121)
+
+hnscc_GSE103322_so <- addClustoData(obj = hnscc_GSE103322_so, clustoCell = hnscc_GSE103322_so_ClustoCell, 
+                                    major_cluster_name = "ClustoCell", sub_cluster_name = "SubClustoCell")
+
+#______________
+
+hnscc_GSE103322_ClustoCell_vs_manual_cellType <- table(ClustoCell = hnscc_GSE103322_so$ClustoCell, 
+                                                       manual = hnscc_GSE103322_so$`classified  as cancer cell`)
+
+hnscc_GSE103322_ClustoCell_vs_manual_cellType_maxOverlap <- round(((hnscc_GSE103322_ClustoCell_vs_manual_cellType %>% apply(1, max) %>% sum())/ncol(hnscc_GSE103322_so))*100) #96%
+
+#_______________________
+
+## Saving the obj after preprocessing as a qs obj
+qs2::qs_save(object = hnscc_GSE103322_so, 
+             file = "../../../Benchmarking/Test Datasets/GSE103322/hnscc_GSE103322_so.qs2")
+
+hnscc_GSE103322_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE103322/hnscc_GSE103322_so.qs2")
+
+```
+
+## Combining the results of benchmarking
+
+```{r}
+
+combined_cancer_vs_norm <- tibble(
+  Dataset = c("GSE72056", "GSE111672 (PDAC-A)", "GSE111672 (PDAC-B)", "GSE115978", "GSE131928", "GSE142213", "GSE154109", "GSE150766", "GSE146409", "GSE146771", "GSE159115", "GSE103322"), 
+  `Cancer Type` = c("Melanoma", "PDAC", "PDAC", "Melanoma", "Glioblastoma", "AEL", "ALL", "SCLC", "LIHC", "CRC", "RCC", "HNSCC"), 
+  Concordance = c(GSE72056_ClustoCell_vs_manual_cellType_maxOverlap,
+                  GSE111672_A_ClustoCell_vs_manual_cellType_maxOverlap,
+                  GSE111672_B_ClustoCell_vs_manual_cellType_maxOverlap,
+                  GSE115978_ClustoCell_vs_manual_cellType_maxOverlap,
+                  GSE131928_ClustoCell_vs_manual_cellType_maxOverlap,
+                  GSE142213_ClustoCell_vs_manual_cellType_maxOverlap,
+                  GSE154109_ClustoCell_vs_manual_cellType_maxOverlap,
+                  GSE150766_ClustoCell_vs_manual_cellType_maxOverlap,
+                  GSE146409_ClustoCell_vs_manual_cellType_maxOverlap,
+                  GSE146771_ClustoCell_vs_manual_cellType_maxOverlap,
+                  GSE159115_ClustoCell_vs_manual_cellType_maxOverlap,
+                  hnscc_GSE103322_ClustoCell_vs_manual_cellType_maxOverlap
+                  ))
+
+## Saving the obj as a qs obj
+qs2::qs_save(object = combined_cancer_vs_norm, 
+             file = "../../../Benchmarking/Test Datasets/combined_cancer_vs_norm.qs2")
+
+combined_cancer_vs_norm <- qs2::qs_read("../../../Benchmarking/Test Datasets/combined_cancer_vs_norm.qs2")
+
+#________________
+
+# Plotting the data
+
+combined_cancer_vs_norm$Dataset <- factor(combined_cancer_vs_norm$Dataset, 
+                                          levels = combined_cancer_vs_norm %>% 
+                                            dplyr::arrange(Concordance, `Cancer Type`) %>% 
+                                            dplyr::pull(Dataset) %>% 
+                                            unique() %>% 
+                                            rev())
+
+combined_cancer_vs_norm_plt <- ggplot(combined_cancer_vs_norm, 
+                                      aes(x = Concordance, y = Dataset, fill = `Cancer Type`)) +
+  geom_bar(stat = "identity", width = 0.5) +
+  ggsci::scale_fill_igv() +
+  labs(tag = "a", x = "% Concordance") +
+    theme_minimal(base_size = 15) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(size = 7),
+    axis.text.x = element_text(color = "black", size = 6),
+    axis.text.y = element_text(color = "black"),
+    legend.position = "top",
+    legend.title = element_text(face = "italic", size = 6),
+    text = element_text(size = 6),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    # Remove outer white space around entire plot (top, right, bottom, left)
+    legend.margin = margin(0, 0, 0, 0),      # Zeroed out
+    legend.box.margin = margin(0, 0, 0, 0),  # Zeroed out
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.4, "cm"),
+    legend.text = element_text(size = 6),
+    legend.key.width = unit(10, "pt"),  # Minimize space between point and text
+    legend.key.height = unit(10, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(0, "pt"),
+    plot.margin = unit(c(0, 0, 0, 0), "mm")
+  ) +
+  guides(fill = guide_legend(nrow = 5, byrow = T)) 
+
+```
+
+# GSE150766 SCLC Detailed Analysis
+
+# First row
+
+```{r}
+
+## GSE150766_so
+GSE150766_so$manual_annot <- GSE150766_so$Condition
+GSE150766_so$manual_annot <- gsub("Normal", "Non-malignant", GSE150766_so$manual_annot)
+GSE150766_so$manual_annot <- gsub("Cancer", "Malignant", GSE150766_so$manual_annot)
+
+#_______________
+
+GSE150766_so$ClustoCell <- as.character(GSE150766_so$ClustoCell)
+
+# Defining ClustoCell Mal and nonMal clusters
+GSE150766_man_clusto_tbl <- table(GSE150766_so$manual_annot, GSE150766_so$ClustoCell)
+GSE150766_Mal_Clusto <- GSE150766_man_clusto_tbl["Malignant", ] %>% which.max() %>% names()
+GSE150766_nonMal_Clusto <- GSE150766_man_clusto_tbl["Non-malignant", ] %>% which.max() %>% names()
+
+# Defining ground truth concordant cells
+ground_truth_mal_cells <- colnames(GSE150766_so)[GSE150766_so$manual_annot == "Malignant" & GSE150766_so$ClustoCell == GSE150766_Mal_Clusto]
+ground_truth_nonMal_cells <- colnames(GSE150766_so)[GSE150766_so$manual_annot == "Non-malignant" & GSE150766_so$ClustoCell == GSE150766_nonMal_Clusto]
+
+# Defining discordant cells
+discordant_cells_MannualMal_ClustoNM <- colnames(GSE150766_so)[GSE150766_so$manual_annot == "Malignant" & GSE150766_so$ClustoCell == GSE150766_nonMal_Clusto]
+discordant_cells_MannualNonMal_ClustoM <- colnames(GSE150766_so)[GSE150766_so$manual_annot == "Non-malignant" & GSE150766_so$ClustoCell == GSE150766_Mal_Clusto]
+
+# Clarifying ClustoCell cluster names
+GSE150766_so$ClustoCell[GSE150766_so$ClustoCell == GSE150766_Mal_Clusto] <- paste0(GSE150766_Mal_Clusto, "-M")
+GSE150766_so$ClustoCell[GSE150766_so$ClustoCell == GSE150766_nonMal_Clusto] <- paste0(GSE150766_nonMal_Clusto, "-NM")
+
+# Unifying ClustoCell cluster names
+# GSE150766_so$ClustoCell[grep("-NM", GSE150766_so$ClustoCell)] <- "ClustoCell-NM"
+# GSE150766_so$ClustoCell[grep("-M", GSE150766_so$ClustoCell)] <- "ClustoCell-M"
+
+# Unifying manual annot cluster names
+GSE150766_so$manual_annot[grep("Non-malignant", GSE150766_so$manual_annot)] <- "OMA-NM"
+GSE150766_so$manual_annot[grep("Malignant", GSE150766_so$manual_annot)] <- "OMA-M"
+
+# Defining combined labels
+GSE150766_so$combined_label <- "Ground Truth Malignant"
+GSE150766_so$combined_label[match(ground_truth_nonMal_cells, colnames(GSE150766_so))] <- "Ground Truth Non-malignant"
+GSE150766_so$combined_label[match(discordant_cells_MannualMal_ClustoNM, colnames(GSE150766_so))] <- "OMA-M | ClustoCell-NM"
+GSE150766_so$combined_label[match(discordant_cells_MannualNonMal_ClustoM, colnames(GSE150766_so))] <- "OMA-NM | ClustoCell-M"
+
+GSE150766_so$combined_label <- factor(GSE150766_so$combined_label, levels = c("Ground Truth Non-malignant",
+                                                                              "OMA-M | ClustoCell-NM",
+                                                                              "OMA-NM | ClustoCell-M",
+                                                                              "Ground Truth Malignant"
+))
+
+#_______________
+
+# Regenerating the umap dim reduction using dataset level markers rather than HVGs
+
+GSE150766_dataset_markers <- getDatasetMarkers(GSE150766_so_ClustoCell, 
+                                                     negative_markers = T, 
+                                                     pos_thresh = 20, 
+                                                     neg_thresh = 20)
+
+GSE150766_so <- ScaleData(GSE150766_so, features = GSE150766_dataset_markers$combined_markers)
+GSE150766_so <- RunPCA(GSE150766_so, features = GSE150766_dataset_markers$combined_markers)
+ElbowPlot(GSE150766_so)
+
+GSE150766_so <- RunUMAP(GSE150766_so, dims = 1:5)
+
+qs2::qs_save(object = GSE150766_so, 
+             file = "../../../Benchmarking/Test Datasets/GSE150766/GSE150766_so.qs2")
+
+#_______________________
+
+# Combined umap plot
+
+GSE150766_so_umap <- CellDimPlot(GSE150766_so, reduction = "umap", group_by = c("combined_label"), 
+                                       label = F, pt_size = 0.000001, 
+                                       theme = "theme_blank", xlab = "", ylab = "", raster = F,
+                                       legend.position = "top", legend.direction = "vertical") +
+  # Add coord_fixed to remove internal axis padding (no expansion around UMAP points)
+  scale_color_manual(values = c("#3C5488FF", "#4DBBD5FF", "#F39B7FFF", "#DC0000FF")) +
+  coord_fixed(clip = "off", expand = FALSE) +  
+  labs(color = NULL, x = NULL, y = NULL, tag = "b", subtitle = "SCLC (GSE150766)") +
+  theme(
+    legend.title = element_text(face = "italic", size = 7),
+    text = element_text(size = 8),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    plot.subtitle = element_text(size = 7),
+    title = element_text(size = 7),
+    axis.title = element_blank(),
+    plot.margin = margin(0, 0, 5, 0),
+    legend.position = "bottom",
+    legend.margin = margin(0, 0, 5, 0),      # Internal legend padding
+    legend.box.margin = margin(0, 0, 0, 5),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 6),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt")
+  ) +
+  labs(color = NULL, x = NULL, y = NULL, tag = "b") +
+  guides(color = guide_legend(override.aes = list(size = 2))) 
+
+#_____________________
+
+library(singscore)
+
+# DE analysis between ground truth cells
+groundTruth_mal_vs_nonMal <- Seurat::FindMarkers(subset(GSE150766_so, cells = c(ground_truth_mal_cells, ground_truth_nonMal_cells)),
+                                                 group.by = "manual_annot",
+                                                 ident.1 = "OMA-M",
+                                                 ident.2 = "OMA-NM")
+
+qs2::qs_save(object = groundTruth_mal_vs_nonMal, file = "../../../Benchmarking/Test Datasets/GSE150766/groundTruth_mal_vs_nonMal.qs2")
+
+groundTruth_mal_vs_nonMal <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE150766/groundTruth_mal_vs_nonMal.qs2")
+
+
+groundTruth_mal_vs_nonMal_ups <- groundTruth_mal_vs_nonMal %>%
+  dplyr::filter(p_val_adj < 0.05, avg_log2FC > 0.585) %>%
+  dplyr::arrange(-avg_log2FC) %>%
+  rownames() %>%
+  head(n = 50)
+
+groundTruth_mal_vs_nonMal_downs <- groundTruth_mal_vs_nonMal %>%
+  dplyr::filter(p_val_adj < 0.05, avg_log2FC < -0.585) %>%
+  dplyr::arrange(avg_log2FC) %>%
+  rownames() %>%
+  head(n = 50)
+
+# Compute Singscore
+## Rank genes per cell
+ranked_mat <- rankGenes(SeuratObject::LayerData(GSE150766_so, layer = "data") %>% as.matrix())
+
+## Compute scores
+scores <- simpleScore(
+  ranked_mat,
+  upSet = groundTruth_mal_vs_nonMal_ups,
+  downSet = groundTruth_mal_vs_nonMal_downs,
+  centerScore = TRUE
+)
+
+## Extract combined score
+mal_up_gene_set_score <- scores$TotalScore
+names(mal_up_gene_set_score) <- colnames(GSE150766_so)
+
+GSE150766_so$Singscore <- mal_up_gene_set_score
+
+qs2::qs_save(object = GSE150766_so, 
+             file = "../../../Benchmarking/Test Datasets/GSE150766/GSE150766_so.qs2")
+
+#_______
+
+GSE150766_de_geneset_plt <- 
+  FeatureStatPlot(GSE150766_so, 
+                  features = c("Singscore"), 
+                  group_by = c("combined_label"), 
+                  ident = c("combined_label"), 
+                  violin_linewidth = 0.01, ylab = "Gene-set Score",
+                  comparisons = list(c("OMA-NM | ClustoCell-M", "OMA-M | ClustoCell-NM")), ref_group = "OMA-NM | ClustoCell-M",
+                  pairwise_method = "wilcox.test", sig_label = "p.adj.signif", sig_labelsize = 1.6,
+                  theme = ggplot2::theme_classic, add_bg = TRUE, 
+                  add_box = T, box_width = 0.15, box_ptsize = 1.8, stack = TRUE, 
+                  palette = "igv",
+                  palcolor = c("Ground Truth Non-malignant" = "#3C5488FF", 
+                               "OMA-M | ClustoCell-NM" = "#4DBBD5FF",
+                               "OMA-NM | ClustoCell-M" = "#F39B7FFF",
+                               "Ground Truth Malignant" = "#DC0000FF")
+  ) +
+  labs(x = NULL, y = "Gene-set Score", subtitle = NULL, tag = "c") + 
+  theme(
+    axis.title.x = element_blank(), 
+    axis.ticks.x = element_blank(), 
+    axis.text.x = element_blank()) +
+  theme(
+    legend.title = element_text(size = 6),
+    text = element_text(size = 7),
+    plot.subtitle = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8), line = element_line(linewidth = 0.1), 
+    axis.title.y = element_text(size = 7),
+    legend.margin = margin(t = 0, r = 2, b = 2, l = 2),      # Internal legend padding
+    legend.box.margin = margin(t = 0, r = 2, b = 2, l = 2),  # External space to plot (keep slight right for legend fit)
+    legend.position = "none",
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(10, "pt"),  # Minimize space between point and text
+    legend.key.height = unit(10, "pt"),
+    legend.text.align = 0,
+    # legend.key.spacing.y = unit(-5, "pt"),
+    # NEW: Remove outer white space around entire plot (top, right, bottom, left)
+    strip.text = element_blank(), 
+    strip.background = element_blank()
+  ) +
+  labs(fill = NULL, x = NULL) +
+  guides(
+    color = guide_legend(ncol = 1, bycol = TRUE),
+    fill  = guide_legend(ncol = 1, bycol = TRUE)
+  ) +
+  ggplot2::theme(line = element_line(linewidth = 0.1))
+
+for (i in seq_along(GSE150766_de_geneset_plt$layers)) {
+  if (inherits(GSE150766_de_geneset_plt$layers[[i]]$geom, "GeomViolin")) {
+    GSE150766_de_geneset_plt$layers[[i]]$aes_params$linewidth <- 0.2
+  }
+}
+
+#____________________________________
+
+# Combine the plots of the first row
+GSE150766_so_first_row <- (
+  wrap_elements(combined_cancer_vs_norm_plt) + 
+    wrap_elements(GSE150766_so_umap) +
+    wrap_elements(GSE150766_de_geneset_plt)
+) + plot_layout(widths = c(22, 21, 15), heights = 1, guides = "keep") & theme(plot.margin = margin(t = 2, r = 2, b = 2, l = 2)) 
+
+
+ggsave(filename = "../../../Testing results/GSE150766/GSE150766_so_first_row.png", 
+       plot = GSE150766_so_first_row, device = "png", width = 6.85, height = (1.762)*1.5, units = "in", dpi = 300)
+
+ggsave(filename = "../../../Testing results/GSE150766/GSE150766_so_first_row.pdf", 
+       plot = GSE150766_so_first_row, device = "pdf", width = 6.85, height = (1.762)*1.5, units = "in", dpi = 300)
+
+```
+
+# Second row
+
+```{r}
+
+library(msigdbr)
+
+# Getting the cancer halmarks
+
+hallmark_df <- msigdbr(
+  species = "Homo sapiens",
+  category = "H"
+)
+
+hallmark_sets <- hallmark_df %>%
+  split(x = .$gene_symbol, f = .$gs_name)
+
+hallmark_sets <- lapply(hallmark_sets, unique)
+
+# Selecting the top SCLC-related ones:
+hallmark_sets <- hallmark_sets[c(
+  "HALLMARK_E2F_TARGETS",
+  "HALLMARK_G2M_CHECKPOINT",
+  "HALLMARK_MYC_TARGETS_V1",
+  "HALLMARK_MYC_TARGETS_V2",
+  "HALLMARK_MITOTIC_SPINDLE",
+  "HALLMARK_NOTCH_SIGNALING",
+  "HALLMARK_P53_PATHWAY",
+  "HALLMARK_ANGIOGENESIS",
+  "HALLMARK_DNA_REPAIR",
+  "HALLMARK_GLYCOLYSIS",
+  "HALLMARK_HYPOXIA",
+  "HALLMARK_PI3K_AKT_MTOR_SIGNALING"
+)]
+
+# Simplifying names
+names(hallmark_sets) <-
+  c(
+  "E2F Targets",
+  "G2M Checkpoint",
+  "MYC Targets V1",
+  "MYC Targets V2",
+  "Mitotic Spindle",
+  "Notch Signaling",
+  "p53 Pathway",
+  "Angiogenesis",
+  "DNA Repair",
+  "Glycolysis",
+  "Hypoxia",
+  "PI3K-AKT-mTOR"
+)
+
+qs2::qs_save(object = hallmark_sets, file = "../../../Benchmarking/Test Datasets/GSE150766/hallmark_sets.qs2")
+
+hallmark_sets <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE150766/hallmark_sets.qs2")
+
+# Cancer halmarks Multi-gene-set scoring
+curr_hallmark_sets <- lapply(
+  hallmark_sets,
+  intersect,
+  rownames(ranked_mat)
+  )
+
+halmark_scores <- multiScore(
+  rankData = ranked_mat,
+  upSetColc = curr_hallmark_sets
+)
+  
+halmark_score_df <- halmark_scores$Scores %>% 
+  t() %>% 
+  as.data.frame()
+
+identical(rownames(halmark_score_df), colnames(GSE150766_so)) # T
+
+GSE150766_so@meta.data <- cbind(GSE150766_so@meta.data, halmark_score_df)
+
+qs2::qs_save(object = GSE150766_so, 
+             file = "../../../Benchmarking/Test Datasets/GSE150766/GSE150766_so.qs2")
+
+#_____________________________
+
+# Plotting the halmarks
+
+mal_nonMal_halmark_score_vis <- 
+  FeatureStatPlot(GSE150766_so, 
+                features = c(colnames(halmark_score_df)), 
+                group_by = c("combined_label"), 
+                ident = c("combined_label"), plot_type = "violin",
+                violin_linewidth = 0.01, ylab = "Gene-set Score",
+                comparisons = list(c("OMA-NM | ClustoCell-M", "OMA-M | ClustoCell-NM")), ref_group = "OMA-NM | ClustoCell-M",
+                pairwise_method = "wilcox.test", sig_label = "p.adj.signif", sig_labelsize = 1.6,
+                theme = ggplot2::theme_classic, add_bg = TRUE, 
+                add_box = T, box_width = 0.15, box_ptsize = 1.8, stack = TRUE, 
+                facet_ncol = 3, facet_scales = "free_y",
+                palette = "igv",
+                palcolor = c("Ground Truth Non-malignant" = "#3C5488FF", 
+                             "OMA-M | ClustoCell-NM" = "#4DBBD5FF",
+                             "OMA-NM | ClustoCell-M" = "#F39B7FFF",
+                             "Ground Truth Malignant" = "#DC0000FF")
+) +
+  labs(x = NULL, y = "Gene-set Score", subtitle = NULL, tag = "d") + 
+  theme(
+    axis.title.x = element_blank(), 
+    axis.ticks.x = element_blank(), 
+    axis.text.x = element_blank()) +
+  theme(
+    legend.title = element_text(size = 6),
+    text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    plot.subtitle = element_text(size = 7),
+    title = element_text(size = 7), line = element_line(linewidth = 0.1), 
+    axis.title.y = element_text(size = 7),
+    legend.margin = margin(t = 0, r = 2, b = 2, l = 2),      # Internal legend padding
+    legend.box.margin = margin(t = 0, r = 2, b = 2, l = 2),  # External space to plot (keep slight right for legend fit)
+    legend.position = "none",
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(10, "pt"),  # Minimize space between point and text
+    legend.key.height = unit(10, "pt"),
+    legend.text.align = 0,
+    # strip.text = element_blank(), 
+    # strip.background = element_blank()
+  ) +
+  labs(fill = NULL, x = NULL) +
+  guides(
+    color = guide_legend(ncol = 1, bycol = TRUE),
+    fill  = guide_legend(ncol = 1, bycol = TRUE)
+  ) +
+  ggplot2::theme(line = element_line(linewidth = 0.1))
+
+for (i in seq_along(mal_nonMal_halmark_score_vis$layers)) {
+  if (inherits(mal_nonMal_halmark_score_vis$layers[[i]]$geom, "GeomViolin")) {
+    mal_nonMal_halmark_score_vis$layers[[i]]$aes_params$linewidth <- 0.2
+  }
+}
+
+
+```
+
+## GSE176031
+
+### Prostate Cancer Tumor and matched normal (GSE176031)
+
+The data was downloaded from https://github.com/franklinhuanglab/scRNA-seq-Analysis-of-Prostate-Cancer-Samples
+https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE176031
+
+```{r}
+
+prostate_T_N <- read_rds("../../../Benchmarking/Test Datasets/GSE176031/dge_combined_annotated.rds")
+
+prostate_T_N$Source <- sapply(prostate_T_N$sample, function(x) unlist(str_split(x, "_"))[2]) %>% 
+  sapply(FUN = function(x) unlist(str_split(x, "\\."))[1])
+
+prostate_T_N$orig.ident[is.na(prostate_T_N$Source)] %>% table()
+# PR5186 PR5196 PR5199 PR5269 
+#    763   1993   1025   1900 
+
+prostate_T_N$Source[is.na(prostate_T_N$Source)] <- "T"
+
+# Manually checked these all are from Radical Prostatectomy Tumor
+
+qs2::qs_save(object = prostate_T_N, file = "../../../Benchmarking/Test Datasets/GSE176031/prostate_T_N.qs2")
+
+prostate_T_N <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE176031/prostate_T_N.qs2")
+
+```
+
+### Clustering and cell type annot
+
+```{r}
+
+library(celliverse)
+
+# Running ClustoCell
+prostate_T_N_ClustoCell <- celliverse::clustoCell(prostate_T_N,
+                                                  identify_subclusters = F, 
+                                                  seed = 121)
+
+qs2::qs_save(object = prostate_T_N_ClustoCell, file = "../../../Benchmarking/Test Datasets/GSE176031/prostate_T_N_ClustoCell.qs2")
+
+prostate_T_N_ClustoCell <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE176031/prostate_T_N_ClustoCell.qs2")
+
+prostate_T_N <- celliverse::addClustoData(obj = prostate_T_N, 
+                                          clustoCell = prostate_T_N_ClustoCell,
+                                          major_cluster_name = "ClustoCell", 
+                                          add_sub_clusters = F)
+
+Idents(prostate_T_N) <- "ClustoCell"
+
+#______________
+
+# Dim reduction
+prostate_T_N_markers <- getDatasetMarkers(obj = prostate_T_N_ClustoCell, 
+                                          positive_markers = T, pos_thresh = 25, 
+                                          negative_markers = T, neg_thresh = 50)
+
+prostate_T_N <- ScaleData(prostate_T_N, features = prostate_T_N_markers$combined_markers)
+prostate_T_N <- RunPCA(prostate_T_N, features = prostate_T_N_markers$combined_markers, reduction.name = "clusto_pca")
+ElbowPlot(prostate_T_N, reduction = "clusto_pca")
+
+prostate_T_N <- RunUMAP(prostate_T_N, dims = 1:13, reduction = "clusto_pca", reduction.name = "clusto_umap")
+
+DimPlot(prostate_T_N, reduction = "clusto_umap", group.by = "ClustoCell")
+
+qs2::qs_save(object = prostate_T_N, file = "../../../Benchmarking/Test Datasets/GSE176031/prostate_T_N.qs2")
+
+prostate_T_N_typoClust <- typoClust(
+  objects = list(prostate_T_N_ClustoCell),
+  desired_sets = NULL,
+  tissue = 'Prostate',
+  condition = 'Prostate Cancer',
+  verbose = TRUE,
+  species='human',
+  mode = 'markerDB'
+)
+
+prostate_T_N <- addTypoData(
+  obj = prostate_T_N,
+  typoClust = prostate_T_N_typoClust,
+  clusters = "ClustoCell"
+)
+
+prostate_T_N$ClustoCell_Celltype_R1_L1[
+  prostate_T_N$ClustoCell_Celltype_R1_L1 ==
+    "Fibroblast -> Cancer-associated Fibroblast"
+] <- "Fibroblast -> CAF"
+
+celltype_map <-
+  prostate_T_N@meta.data %>%
+  distinct(ClustoCell_Celltype_R1_L1, ClustoCell) %>%
+  group_by(ClustoCell_Celltype_R1_L1) %>%
+  summarise(
+    combined_label = paste0(
+      dplyr::first(ClustoCell_Celltype_R1_L1),
+      " (",
+      paste(sort(ClustoCell), collapse = ", "),
+      ")"
+    ),
+    .groups = "drop"
+  )
+
+prostate_T_N$combined_label <-
+  celltype_map$combined_label[
+    match(
+      prostate_T_N$ClustoCell_Celltype_R1_L1,
+      celltype_map$ClustoCell_Celltype_R1_L1
+    )
+  ]
+
+prostate_T_N$combined_label[
+  prostate_T_N$combined_label ==
+    "Quiescent (Quiescent)"
+] <- "Quiescent"
+
+qs2::qs_save(object = prostate_T_N, file = "../../../Benchmarking/Test Datasets/GSE176031/prostate_T_N.qs2")
+
+prostate_T_N_typoClustVis <- 
+  typoClustVis(
+  typoClust = prostate_T_N_typoClust,
+  order_by = "Cell Type",
+  flip = T,
+  desired_sets = NULL,
+  rank_thresh = 1, refine = T, cellType_palette = ggsci::pal_d3()(10)
+)
+
+#__________________
+
+prostate_T_N_umap <- CellDimPlot(prostate_T_N, reduction = "umap", group_by = c("combined_label"), 
+                                       label = F, pt_size = 0.000001, 
+                                       theme = "theme_blank", xlab = "", ylab = "", raster = F,
+                                       legend.position = "top", legend.direction = "vertical") +
+  # Add coord_fixed to remove internal axis padding (no expansion around UMAP points)
+  coord_fixed(clip = "off", expand = FALSE) +  
+  labs(color = NULL, x = NULL, y = NULL, tag = "e", 
+       subtitle = "Prostate Cancer (GSE176031)") +
+  theme(
+    legend.title = element_text(face = "italic", size = 7),
+    text = element_text(size = 8),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    plot.subtitle = element_text(size = 7),
+    title = element_text(size = 7),
+    axis.title = element_blank(),
+    plot.margin = margin(0, 0, 5, 0),
+    legend.position = "bottom",
+    legend.margin = margin(t = 5, r = 0, b = 5, l = 0),      # Internal legend padding
+    legend.box.margin = margin(0, 0, 0, 5),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(5, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 6),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt")
+  ) +
+  guides(color = guide_legend(override.aes = list(size = 2))) 
+
+```
+
+## Combine row two
+
+```{r}
+
+row_two <- (
+  wrap_elements(mal_nonMal_halmark_score_vis) + 
+    wrap_elements(prostate_T_N_umap)
+) + plot_layout(widths = c(13, 5), heights = 1, guides = "keep") & theme(plot.margin = margin(t = 2, r = 2, b = 2, l = 2)) 
+
+```
+
+# Third row
+
+#### Proportion and marker eval
+
+```{r}
+
+#___________________
+
+# Checking the markers of clusters
+
+## Major Clusters
+sapply(names(prostate_T_N_ClustoCell$markers$major_clusters$cluster_specific$positive_markers), 
+       function(i) { 
+           tmp_markers <- prostate_T_N_ClustoCell$markers$major_clusters$cluster_specific$positive_markers[[i]] %>% 
+               dplyr::slice(1:30) %>% dplyr::pull(Feature)
+           cat(paste0(i, ": "))
+           cat(paste0(tmp_markers, collapse = ", "))
+           cat("\n\n")
+       }
+)
+
+#_______________________
+
+# C10 fractions plot
+
+source_df <- prostate_T_N@meta.data %>%
+  dplyr::filter(ClustoCell == "C10") %>%
+  dplyr::count(Source)
+
+source_df$Source <- factor(
+  source_df$Source,
+  levels = c("N", "PB1", "PB2", "T")
+)
+
+C10_source_plt <-
+  ggplot(source_df,
+         aes(Source, n)) +
+  geom_col(width = 0.7, fill = "#6E7B8B", linewidth = 0.1, colour = "black") +
+  geom_text(aes(label = n),
+            vjust = -0.3,
+            size = 2.2) +
+  scale_fill_igv() +
+  labs(
+    x = NULL,
+    y = "Number of cells",
+    tag = "f",
+    fill = NULL
+  ) +
+  theme_classic() +
+  theme(
+    plot.tag = element_text(size = 7, face = "bold"),
+    text = element_text(size = 7),
+    title = element_text(size = 7),
+    axis.title.y = element_text(size = 7),
+    axis.text = element_text(size = 7),
+    line = element_line(linewidth = 0.1),
+    
+    legend.title = element_text(size = 6),
+    legend.text = element_text(size = 5),
+    legend.position = "none"
+  )
+
+#________________
+
+prostate_T_N_marker_vis <- 
+  FeatureStatPlot(subset(prostate_T_N, subset = combined_label %in% c("ERG+ Malignant Cell (C10)", "Luminal Epithelial Cell (C1, C9)")), 
+                features = c("PCA3", "ERG", "CRISP3", "FOLH1", "GOLM1", "NKX3-1", "KLK4", "KLK3"), 
+                group_by = c("combined_label"), 
+                ident = c("combined_label"), plot_type = "violin", pos_only = "any",
+                violin_linewidth = 0.01, ylab = "Log1p(Count)",
+                comparisons = list(c("ERG+ Malignant Cell (C10)", "Luminal Epithelial Cell (C1, C9)")), ref_group = "ERG+ Malignant Cell (C10)",
+                pairwise_method = "wilcox.test", sig_label = "p.adj.signif", sig_labelsize = 1.6,
+                theme = ggplot2::theme_classic, add_bg = TRUE, 
+                add_box = F, box_width = 0.15, box_ptsize = 1.8, stack = TRUE, 
+                facet_ncol = 4, 
+                # facet_scales = "free_y",
+                palette = "Paired",
+                palcolor = c("ERG+ Malignant Cell (C10)" = "#E31A1C",
+                             "Luminal Epithelial Cell (C1, C9)" = "#A6CEE3")
+) +
+  labs(x = NULL, y = "Log1p(Count)", subtitle = NULL, tag = "g") + 
+  theme(
+    axis.title.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.x = element_blank()) +
+  theme(
+    legend.title = element_text(size = 6),
+    text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    plot.subtitle = element_text(size = 7),
+    title = element_text(size = 7), line = element_line(linewidth = 0.1), 
+    axis.title.y = element_text(size = 7),
+    legend.margin = margin(t = 0, r = 2, b = 2, l = 2),      # Internal legend padding
+    legend.box.margin = margin(t = 0, r = 2, b = 2, l = 2),  # External space to plot (keep slight right for legend fit)
+    legend.position = "none",
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(10, "pt"),  # Minimize space between point and text
+    legend.key.height = unit(10, "pt"),
+    legend.text.align = 0,
+    # strip.text = element_blank(), 
+    # strip.background = element_blank()
+  ) +
+  labs(fill = NULL, x = NULL) +
+  guides(
+    color = guide_legend(ncol = 1, bycol = TRUE),
+    fill  = guide_legend(ncol = 1, bycol = TRUE)
+  ) +
+  ggplot2::theme(line = element_line(linewidth = 0.1))
+
+for (i in seq_along(prostate_T_N_marker_vis$layers)) {
+  if (inherits(prostate_T_N_marker_vis$layers[[i]]$geom, "GeomViolin")) {
+    prostate_T_N_marker_vis$layers[[i]]$aes_params$linewidth <- 0.2
+  }
+}
+
+```
+
+
+#### CopyKat
+
+```{r}
+
+library(devtools)
+install_github("navinlabcode/copykat")
+
+library(copykat)
+
+prostate_T_N_C10_copykat <-
+      copykat(
+      rawmat=prostate_T_N@assays$RNA$counts[, prostate_T_N$ClustoCell %in% c("C10",
+                                                                             "C1", "C9", # Adding other epithelial clusters to have reference normal cells for comparison
+                                                                             "C5", "C12" # Adding other epithelial clusters to have reference normal cells for comparison
+                                                                             )],
+      id.type="S",
+      cell.line='no',
+      distance="euclidean",
+      output.seg="FALSE",
+      plot.genes="FALSE",
+      n.cores=8
+    )
+
+qs2::qs_save(object = prostate_T_N_C10_copykat,file = "../../../Benchmarking/Test Datasets/GSE176031/prostate_T_N_C10_copykat.qs2")
+
+prostate_T_N_C10_copykat <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE176031/prostate_T_N_C10_copykat.qs2")
+
+# Add results back to Seurat metadata
+prostate_T_N$copykat_status <- NA
+
+prostate_T_N$copykat_status[
+    match(
+        prostate_T_N_C10_copykat$prediction$cell.names,
+        colnames(prostate_T_N)
+    )
+] <- prostate_T_N_C10_copykat$prediction$copykat.pred
+
+qs2::qs_save(object = prostate_T_N, file = "../../../Benchmarking/Test Datasets/GSE176031/prostate_T_N.qs2")
+
+```
+
+#### InferCNA
+
+```{r}
+
+install.packages("BiocManager")
+
+BiocManager::install("Homo.sapiens")
+
+BiocManager::install("jpmam1/scalop")
+
+BiocManager::install("jlaffy/infercna")
+
+#_________
+
+library(infercna)
+library(tibble)
+library(dplyr)
+
+# According to the package github page:
+# The bare minimum for use in infercna is:
+# a single-cell expression matrix of genes by cells
+# not centered
+# normalised for sequencing depth and gene length (e.g. one of TPM, RPKM, CPM, etc).
+
+# Normalizing the data using CPM method
+prostate_T_N <- NormalizeData(prostate_T_N, normalization.method = "RC", scale.factor = 1e6)
+
+# Extract raw counts for C10
+subMat <- GetAssayData(
+    prostate_T_N,
+    assay = "RNA",
+    layer = "data"
+)[, prostate_T_N$ClustoCell %in% c("C10",
+                                   "C1", "C9", # Adding other epithelial clusters to have reference normal cells for comparison
+                                   "C5", "C12" # Adding other epithelial clusters to have reference normal cells for comparison
+                                   )]
+
+subMat <- as.matrix(subMat)
+
+# Run infercna
+cna <- infercna(
+    m = subMat,
+    isLog = FALSE,
+    verbose = TRUE
+)
+
+qs2::qs_save(object = cna, file = "../../../Benchmarking/Test Datasets/GSE176031/prostate_T_N_C10_cna.qs2")
+
+cna <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE176031/prostate_T_N_C10_cna.qs2")
+
+# Calculate malignancy metrics
+cors <- cnaCor(cna)
+signal <- cnaSignal(cna)
+
+# Per-cell results
+
+## Old approach
+malig <- tibble(
+    Cell = colnames(subMat),
+    CNA_Signal = signal,
+    CNA_Correlation = cors,
+    Malignant = ifelse(
+        signal > mean(signal) &
+        cors > mean(cors),
+        "Malignant",
+        "Benign"
+    )
+)
+
+## different approach
+# signal_cut <- quantile(signal, 0.90)
+# cor_cut <- quantile(cors, 0.90)
+
+# malig <- tibble(
+#     Cell = colnames(subMat),
+#     CNA_Signal = signal,
+#     CNA_Correlation = cors,
+#     Malignant = ifelse(
+#     signal >= signal_cut &
+#     cors >= cor_cut,
+#     "Malignant",
+#     "Benign"
+# )
+# )
+
+# View summary
+table(malig$Malignant)
+
+# Add results back to Seurat metadata
+prostate_T_N$infercna_status <- NA
+
+prostate_T_N$infercna_status[
+    match(
+        malig$Cell,
+        colnames(prostate_T_N)
+    )
+] <- malig$Malignant
+
+qs2::qs_save(object = prostate_T_N, file = "../../../Benchmarking/Test Datasets/GSE176031/prostate_T_N.qs2")
+
+```
+
+#### CopyKat InferCNA plot
+
+```{r}
+
+
+library(dplyr)
+library(ggplot2)
+
+## C10 cells and other epi for comparison
+epi_df <- prostate_T_N@meta.data %>%
+  dplyr::filter(
+    ClustoCell %in% c("C10", "C1", "C9", "C5", "C12")
+  )
+
+mal_df <-
+  epi_df %>%
+  group_by(ClustoCell) %>%
+  summarise(
+    Total = n(),
+
+    CopyKAT = sum(copykat_status == "aneuploid", na.rm = TRUE),
+
+    InferCNA = sum(infercna_status == "Malignant", na.rm = TRUE),
+
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = c(CopyKAT, InferCNA),
+    names_to = "Method",
+    values_to = "Malignant"
+  ) %>%
+  mutate(
+    Percent = 100 * Malignant / Total,
+    Method = factor(Method, levels = c("CopyKAT", "InferCNA"))
+  )
+
+# Plot
+mal_method_plt <-
+    ggplot(
+    mal_df,
+    aes(ClustoCell, Percent, fill = Method)
+  ) +
+  geom_col(
+    position = position_dodge(width = 0.7),
+    width = 0.6
+  ) +
+  geom_text(
+    aes(label = round(Percent)),
+    position = position_dodge(width = 0.7),
+    vjust = -0.3,
+    size = 2.2
+  ) +
+  scale_y_continuous(
+    limits = c(0, 100),
+    breaks = seq(0, 100, 20),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_fill_viridis_d(option = "H") +
+  labs(
+    x = NULL,
+    y = "Malignant cells (%)",
+    tag = "h"
+  ) +
+  theme_classic() +
+  theme(
+    plot.tag = element_text(size = 7, face = "bold"),
+    text = element_text(size = 7),
+    title = element_text(size = 7),
+    axis.title.y = element_text(size = 7),
+    axis.text = element_text(size = 7),
+    axis.text.x = element_text(
+      angle = 25,
+      vjust = 1,
+      hjust = 1
+    ),
+    line = element_line(linewidth = 0.1),
+    legend.margin = margin(0, 0, 0, 0),      # Zeroed out
+    legend.box.margin = margin(0, 0, 0, 0),  # Zeroed out
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.4, "cm"),
+    legend.text = element_text(size = 6),
+    legend.key.width = unit(10, "pt"),  # Minimize space between point and text
+    legend.key.height = unit(10, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(0, "pt"),
+
+    legend.position = "top", legend.direction = "horizontal"
+  )
+```
+
+## Combine row three
+
+```{r}
+
+row_three <- (
+    wrap_elements(C10_source_plt) +
+    wrap_elements(prostate_T_N_marker_vis) +
+    wrap_elements(mal_method_plt)
+) + plot_layout(widths = c(10, 21, 14), heights = 1, guides = "keep") & theme(plot.margin = margin(t = 2, r = 2, b = 2, l = 2)) 
+
+```
+
+# Combine all rows
+
+```{r}
+
+fig_GSE150766_combined_plt <- wrap_plots(
+  wrap_elements(GSE150766_so_first_row), 
+  wrap_elements(row_two), 
+  wrap_elements(row_three),
+  heights = c(3, 5, 2.5)) & theme(plot.margin = margin(t = 0, r = 4, b = 0, l = 3)) 
+
+ggsave(filename = "../../../Testing results/fig_GSE150766_combined_plt.pdf", 
+       plot = fig_GSE150766_combined_plt, device = "pdf", width = 6.85, height = (1.762)*5, units = "in", dpi = 300)
+
+# ggsave(filename = "../../../Testing results/fig_GSE150766_combined_plt.png", 
+#        plot = fig_GSE150766_combined_plt, device = "png", width = 6.85, height = (1.762)*5, units = "in", dpi = 300)
+
+
+```

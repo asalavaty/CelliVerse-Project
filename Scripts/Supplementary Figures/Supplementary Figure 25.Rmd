@@ -1,0 +1,569 @@
+---
+title: "Evaluating ClustoCell's Performance in finding novel biology, validation in other dataset(s)"
+author: "Adrian Salavaty"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(pROC)
+library(umap)
+library(cluster)
+library(ggplot2)
+library(dplyr)
+library(splatter)
+library(Seurat)
+library(tidyverse)
+library(scplotter)
+library(scran)
+library(scater)
+library(Matrix)
+library(SeuratDisk)
+library(hdf5r)
+library(patchwork)
+library(paletteer)
+library(hrbrthemes)
+library(glmnet)
+library(DescTools)
+library(ggalign)
+library(ggpubr)   
+library(rmda)
+library(data.table)
+library(caret)
+library(monocle3)
+library(SeuratWrappers)
+library(scales)
+
+```
+
+# Introduction
+
+Script for evaluation of ClustoCell's Performance in finding novel biology, validation in other dataset(s).
+
+# Function Defintion
+
+We first define some helper functions.
+
+```{r}
+
+# Personalized Theme function
+
+styled_theme <- function(
+  style = c("academic", "minimal", "modern", "dark", "classic", "void"),
+  border_mode = c("default", "all", "none"),
+  title_align = c("center", "left", "right"),
+  legends_to_drop = NULL,
+  axes_title_drop = FALSE,
+  legend_position = c("default", "top", "bottom", "left", "right", "inside"),
+  axis_title_face = c("regular", "bold"),
+  x_axis_text_angle = 45,
+  x_axis_text_y = -0.3,
+  remove_margin = c("none", "bottom", "all", "top", "left", "right")
+) {
+  style <- match.arg(style)
+  border_mode <- match.arg(border_mode)
+  title_align <- match.arg(title_align)
+  legend_position <- match.arg(legend_position)
+  axis_title_face <- match.arg(axis_title_face)
+  remove_margin <- match.arg(remove_margin)
+
+  base_font <- "Helvetica"
+  align_map <- c(left = 0, center = 0.5, right = 1)
+  hjust_val <- align_map[title_align]
+  thin_size <- 0.3  
+
+  # Decide axis title face
+  axis_face_val <- ifelse(axis_title_face == "bold", "bold", "plain")
+
+  # Base theme selection
+  if (style == "void") {
+    theme_out <- theme_classic(base_size = 13, base_family = base_font) +
+      theme(
+        axis.title.x = element_blank(),  
+        axis.title.y = element_blank(),  
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "academic") {
+    theme_out <- theme_minimal(base_size = 14, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 16, hjust = hjust_val),
+        plot.subtitle = element_text(size = 13, hjust = hjust_val, color = "grey30"),
+        plot.caption = element_text(size = 10, hjust = 1, color = "grey40"),
+        axis.title = element_text(face = axis_face_val, size = 13),
+        axis.text = element_text(size = 12, color = "black"),
+        panel.grid.major = element_line(color = "grey80", size = thin_size),
+        panel.grid.minor = element_blank(),
+        legend.position = "right",
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "minimal") {
+    theme_out <- theme_minimal(base_size = 13, base_family = base_font) +
+      theme(
+        panel.grid = element_blank(),
+        axis.line = element_line(color = "black", size = thin_size),
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.text = element_text(color = "black"),
+        axis.title = element_text(face = axis_face_val),
+        legend.position = "none",
+        legend.title = element_text(face = "italic")
+      )
+  } else if (style == "modern") {
+    theme_out <- theme_light(base_size = 13, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(color = "grey80", linetype = "dashed", size = thin_size),
+        panel.grid.minor = element_blank(),
+        legend.position = "bottom",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "dark") {
+    theme_out <- theme_minimal(base_size = 13, base_family = base_font) +
+      theme(
+        plot.background = element_rect(fill = "black", color = NA),
+        panel.background = element_rect(fill = "black", color = NA),
+        panel.grid.major = element_line(color = "grey30", size = thin_size),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, color = "white", hjust = hjust_val),
+        plot.subtitle = element_text(color = "grey80", hjust = hjust_val),
+        axis.text = element_text(color = "white"),
+        axis.title = element_text(color = "white", face = axis_face_val),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.text = element_text(color = "white"),
+        legend.title = element_text(color = "white", face = "italic"),
+        axis.line = element_line(color = "white", size = thin_size)
+      )
+  } else if (style == "classic") {
+    theme_out <- theme_classic(base_size = 13, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  }
+
+  # Apply border mode
+  if (border_mode == "all") {
+    theme_out <- theme_out + theme(panel.border = element_rect(color = "black", fill = NA, size = thin_size))
+  } else if (border_mode == "none") {
+    theme_out <- theme_out + theme(panel.border = element_blank(), axis.line = element_blank())
+  }
+
+  # Drop axes titles if requested
+  if (axes_title_drop) {
+    theme_out <- theme_out + theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+  }
+
+  # Override x-axis text angle and vertical position
+  theme_out <- theme_out + theme(
+    axis.text.x = element_text(
+      angle = x_axis_text_angle,
+      vjust = 1,
+      hjust = 1,
+      margin = margin(t = x_axis_text_y)
+    )
+  )
+
+  # Handle margin removal
+  if (remove_margin == "all") {
+    theme_out <- theme_out + theme(plot.margin = margin(0, 0, 0, 0))
+  } else if (remove_margin == "top") {
+    theme_out <- theme_out + theme(plot.margin = margin(t = 0))
+  } else if (remove_margin == "bottom") {
+    theme_out <- theme_out + theme(plot.margin = margin(b = 0))
+  } else if (remove_margin == "left") {
+    theme_out <- theme_out + theme(plot.margin = margin(l = 0))
+  } else if (remove_margin == "right") {
+    theme_out <- theme_out + theme(plot.margin = margin(r = 0))
+  }
+  # if "none", do nothing
+
+  # Legend positioning override
+  if (legend_position != "default") {
+    if (legend_position == "inside") {
+      theme_out <- theme_out + theme(
+        legend.position = c(0.98, 0.98),
+        legend.justification = c("right", "top"),
+        legend.direction = "vertical"
+      )
+    } else {
+      horiz <- legend_position %in% c("top", "bottom")
+      theme_out <- theme_out + theme(
+        legend.position = legend_position,
+        legend.direction = if (horiz) "horizontal" else "vertical"
+      )
+    }
+  }
+
+  # Return theme + guides if needed
+  if (!is.null(legends_to_drop)) {
+    drop_list <- lapply(legends_to_drop, function(x) "none")
+    names(drop_list) <- legends_to_drop
+    return(list(theme_out, guides(.list = drop_list)))
+  } else {
+    return(theme_out)
+  }
+}
+
+#____________
+
+# Label plot
+label_plt <- function(label = "Label", size = 1) {
+  ggplot(data.frame(x = 1, y = 1), aes(x = x, y = y)) +
+    # Draw a single vertical bar
+    geom_col(width = 0.6, fill = "lightgrey", color = "black") +
+    # Add vertical text (angle=90)
+    annotate("text", x = 1, y = 0.5, label = label, size = size,
+             angle = 90, size = 6, vjust = 0.5, hjust = 0.5) +
+    # Remove all extra space
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0), limits = c(0, 1)) +
+    theme_void(base_size = 14) +             # no axes, ticks, labels
+    theme(
+        plot.margin = margin(0, 0, 0, 0),      # remove outside margins
+        panel.spacing = unit(0, "pt"),         # remove panel padding
+        plot.background = element_blank(),     # no background
+        panel.background = element_blank()
+    )
+}
+
+#__________________________________________________________________
+
+# Box plot with stats
+
+make_facet_boxplot_with_stats <- function(
+    df,
+    x = "group",
+    y = "value",
+    fill = NULL,
+    palette = NULL,
+    facet.by = NULL,
+    scales = "free_y",
+    facet.nrow = NULL,       
+    facet.ncol = NULL,      
+    alpha = 0.8,
+    xlab = NULL,
+    ylab = NULL,
+    subtitle = NULL,
+    tag = NULL,
+    jitter.width = 0.15,
+    jitter.size = 0.35,
+    jitter.alpha = 0.6,
+    method = "wilcox.test",
+    p.adjust.method = "none",
+    hide.ns = FALSE,
+    base_size = 10
+) {
+
+  library(dplyr)
+  library(ggpubr)
+  library(rstatix)
+  library(ggplot2)
+
+  # ----------------------------
+  # 1. Statistical test per facet
+  # ----------------------------
+  stat.test <- df %>%
+    group_by(!!sym(facet.by)) %>%
+    rstatix::wilcox_test(as.formula(paste(y, "~", x))) %>%
+    adjust_pvalue(method = p.adjust.method) %>%
+    add_significance()
+
+  # Add xy positions (critical for facetted layout)
+  stat.test <- stat.test %>% add_xy_position(x = x)
+
+  # ----------------------------
+  # 2. Build ggpubr boxplot
+  # ----------------------------
+  p <- ggpubr::ggboxplot(
+    df,
+    x = x,
+    y = y,
+    fill = fill,
+    alpha = alpha,
+    palette = palette,
+    facet.by = facet.by,
+    scales = scales,
+    nrow = facet.nrow,  
+    ncol = facet.ncol,   
+    outlier.shape = NA
+  ) +
+    geom_jitter(
+      width = jitter.width,
+      size = jitter.size,
+      alpha = jitter.alpha
+    ) +
+    labs(
+      x = xlab,
+      y = ylab,
+      subtitle = subtitle,
+      tag = tag
+    ) +
+    theme_classic(base_size = base_size) +
+    theme(
+      plot.subtitle = element_text(size = 7),
+      text = element_text(size = 6),
+      strip.text = element_text(size = 5.5),
+      plot.tag = element_text(size = 7, face = "bold"),
+      axis.title.y = element_text(size = 7),
+      plot.margin = margin(0, 5, 0, 5),
+      legend.position = "none"
+    )
+
+  # ----------------------------------
+  # 3. Add p-value stars to the plot
+  # ----------------------------------
+  p <- p + stat_pvalue_manual(
+    stat.test,
+    label = "p.adj.signif",
+    hide.ns = hide.ns,
+    size = 2.2,
+    tip.length = 0.01
+  )
+
+  return(p)
+}
+
+```
+
+
+```{r}
+
+# Concordance = 100*Sum(rowMax)/N
+
+library(paletteer)
+
+paste(as.vector(col2rgb("#0000CCFF")), collapse = " ")
+
+# https://pmassicotte.github.io/paletteer_gallery/
+
+paletteer::paletteer_d("MetBrewer::Austria", 7)
+#A40000FF #16317DFF #007E2FFF #FFCD12FF #B86092FF #721B3EFF #00B7A7FF 
+
+plotthis::palette_list %>% names()
+
+# Best pals from ggsci: pal_npg (10), pal_d3 (10), pal_ucscgb (26), pal_igv (51)
+
+# "#FF0000FF" "#FF9900FF" "#FFCC00FF" "#00FF00FF" "#6699FFFF" "#CC33FFFF" "#99991EFF" "#999999FF" "#FF00CCFF" "#CC0000FF" "#FFCCCCFF" "#FFFF00FF" "#CCFF00FF" "#358000FF" "#0000CCFF" "#99CCFFFF" "#00FFFFFF"
+# "#CCFFFFFF" "#9900CCFF" "#CC99FFFF" "#996600FF" "#666600FF" "#666666FF" "#CCCCCCFF" "#79CC3DFF" "#CCCC99FF"
+
+# "#1F77B4FF" "#FF7F0EFF" "#2CA02CFF" "#D62728FF" "#9467BDFF" "#8C564BFF" "#E377C2FF" "#7F7F7FFF" "#BCBD22FF" "#17BECFFF"
+
+# NPG colors:
+# "#E64B35FF" "#4DBBD5FF" "#00A087FF" "#3C5488FF" "#F39B7FFF" "#8491B4FF" "#91D1C2FF" "#DC0000FF" "#7E6148FF" "#B09C85FF"
+
+# "#5050FFFF" "#CE3D32FF" "#749B58FF" "#F0E685FF" "#466983FF" "#BA6338FF" "#5DB1DDFF" "#802268FF" "#6BD76BFF" "#D595A7FF" "#924822FF" "#837B8DFF" "#C75127FF" "#D58F5CFF" "#7A65A5FF" "#E4AF69FF" "#3B1B53FF"
+# "#CDDEB7FF" "#612A79FF" "#AE1F63FF" "#E7C76FFF" "#5A655EFF" "#CC9900FF" "#99CC00FF" "#A9A9A9FF" "#CC9900FF" "#99CC00FF" "#33CC00FF" "#00CC33FF" "#00CC99FF" "#0099CCFF" "#0A47FFFF" "#4775FFFF" "#FFC20AFF"
+# "#FFD147FF" "#990033FF" "#991A00FF" "#996600FF" "#809900FF" "#339900FF" "#00991AFF" "#009966FF" "#008099FF" "#003399FF" "#1A0099FF" "#660099FF" "#990080FF" "#D60047FF" "#FF1463FF" "#00D68FFF"
+
+ # "#5050FFFF" "#CE3D32FF" "#749B58FF" "#F0E685FF" "#466983FF" "#BA6338FF" "#5DB1DDFF" "#802268FF" "#6BD76BFF" "#D595A7FF"
+
+# Define the color palettes
+
+npg_pal <- ggsci::pal_npg()(10)
+npg_reverse_pal <- rev(ggsci::pal_npg("nrc")(10))
+
+```
+
+# Correlation Analysis between C2-Sub1 score and CIBERSORT
+
+```{r}
+
+# BiocManager::install(c("curatedTCGAData", "MultiAssayExperiment", "TCGAutils", "GSVA"), update = FALSE, ask = FALSE)
+
+# Load libraries
+library(curatedTCGAData)
+library(survival)
+library(survminer)
+library(SummarizedExperiment)
+library(singscore)
+
+# From Fig. 6
+CD4_EM_C2Sub1_vs_C3Sub2 <- qs2::qs_read("../../../Benchmarking/Test Datasets/breast cancer single-cell Map/CD4_EM_C2Sub1_vs_C3Sub2.qs2")
+
+CD4_EM_C2Sub1_vs_C3Sub2_top_ups <- CD4_EM_C2Sub1_vs_C3Sub2 %>% dplyr::filter(p_val_adj < 0.05, avg_log2FC > 0.585) %>% rownames()
+
+CD4_EM_C2Sub1_vs_C3Sub2_top_downs <- CD4_EM_C2Sub1_vs_C3Sub2 %>% dplyr::filter(p_val_adj < 0.05, avg_log2FC < -0.585) %>% dplyr::slice_min(order_by = avg_log2FC, n = 20) %>% rownames()
+
+#_______________
+
+# Downloading TCGA-BRCA dataset (RNA-Seq normalized gene expression and clinical data)
+brca_mae <- curatedTCGAData(diseaseCode = "BRCA",
+                            version = "2.1.1",
+                            assays = "RNASeq2GeneNorm",
+                            dry.run = FALSE)
+
+qs2::qs_save(object = brca_mae,
+             file = "../../../Benchmarking/Test Datasets/TCGA/brca_mae.qs2")
+
+brca_mae <- qs2::qs_read("../../../Benchmarking/Test Datasets/TCGA/brca_mae.qs2")
+
+# Extract the gene expression data (SummarizedExperiment)
+exp_se <- experiments(brca_mae)[["BRCA_RNASeq2GeneNorm-20160128"]]
+colnames(exp_se) <- gsub("-01$", "", colnames(exp_se))
+
+# Extract clinical data
+clinical_data <- colData(brca_mae)
+
+# Prepare expression matrix
+expr_mat <- assay(exp_se)
+
+# Prepare gene sets list
+cd4_em_nonNK_nonCD8_signature <- c("CD4", "CD40LG", "IL7R", "ITGB1", "ANXA1")
+up_genes_plus <- intersect(c(CD4_EM_C2Sub1_vs_C3Sub2_top_ups, cd4_em_nonNK_nonCD8_signature), rownames(expr_mat)) %>% unique()
+
+down_genes <- intersect(CD4_EM_C2Sub1_vs_C3Sub2_top_downs, rownames(expr_mat)) %>% unique()
+
+length(up_genes_plus)
+length(down_genes)
+
+# Compute Singscore (combined up/down)
+# Rank genes per sample
+ranked_mat <- rankGenes(expr_mat)
+
+# Compute scores
+plus_scores <- simpleScore(
+  ranked_mat,
+  upSet = up_genes_plus,
+  downSet = down_genes,
+  centerScore = TRUE
+)
+
+# Extract combined score
+gene_set_plus_score <- plus_scores$TotalScore
+names(gene_set_plus_score) <- colnames(expr_mat)
+
+# Prepare survival data
+# In TCGA, overall survival (OS) is typically constructed from:
+# - vital_status: 0 (Alive) or 1 (Dead)
+# - days_to_last_followup: for censored (alive)
+# - days_to_death: for events (dead)
+
+# Create OS time (in days)
+os_time <- ifelse(clinical_data$vital_status == 1, 
+                  clinical_data$days_to_death, 
+                  clinical_data$days_to_last_followup)
+
+# Create OS event (1 = dead, 0 = censored)
+os_event <- ifelse(clinical_data$vital_status == 1, 1, 0)
+
+# Censoring the follow-up time to 10 years (120 months; 3600 days)
+## We censor all the patients with over 10 years survival (i.e. we set their survival/vital status to 0 up until 10 years and set their days (days_to_last_followup to 3600))
+os_time[which(clinical_data$days_to_death > 3600 | clinical_data$days_to_last_followup > 3600)] <- 3600
+os_event[which(clinical_data$days_to_death > 3600 | clinical_data$days_to_last_followup > 3600)] <- 0
+
+# Ensure sample names match between expression and clinical
+common_samples <- intersect(names(gene_set_plus_score), rownames(clinical_data))
+length(common_samples)
+
+# Subset to common samples
+gene_set_plus_score <- gene_set_plus_score[common_samples]
+os_time <- os_time[match(common_samples, rownames(clinical_data))]
+os_event <- os_event[match(common_samples, rownames(clinical_data))]
+
+# Remove NA in survival data
+valid_idx <- !is.na(os_time) & !is.na(os_event) & !is.na(gene_set_plus_score)
+os_time <- os_time[valid_idx]
+os_event <- os_event[valid_idx]
+gene_set_plus_score <- gene_set_plus_score[valid_idx]
+
+#__________________________
+
+# CIBERSORTx
+
+# Subsetting expr_mat for uploading to CIBERSORTx
+expr_mat_flt <- expr_mat[,names(gene_set_plus_score)]
+
+## Removing genes with NA values
+expr_mat_flt <- expr_mat_flt[-which(is.na(rowSums(expr_mat_flt))),]
+expr_mat_flt <- as.data.frame(expr_mat_flt)
+expr_mat_flt <- rownames_to_column(expr_mat_flt, var = "Gene")
+write_tsv(expr_mat_flt, "../../../Benchmarking/Test Datasets/TCGA/expr_mat_flt.tsv")
+
+score_df <-
+data.frame(
+    Sample=names(gene_set_plus_score),
+    CD4EM_score=gene_set_plus_score
+)
+
+ciber <- read.csv(
+    "../../../Benchmarking/Test Datasets/TCGA/CIBERSORTx_Job2_Results.csv",
+    row.names=1,
+    check.names=FALSE
+)
+
+identical(rownames(ciber), score_df$Sample) # T
+
+# Compute correlations
+
+immune_cols <-
+colnames(ciber)[
+    !(colnames(ciber) %in%
+        c("P.value","Correlation","RMSE", "P-value"))
+]
+
+cors <- lapply(immune_cols,function(cell){
+
+    tmp <- cor.test(
+        score_df$CD4EM_score,
+        ciber[[cell]],
+        method="spearman"
+    )
+
+    data.frame(
+        Cell=cell,
+        rho=tmp$estimate,
+        p=tmp$p.value
+    )
+})  %>% bind_rows()
+
+## Vis CIBERSORT results
+
+ciber_cors_vis <- 
+  ggplot(cors, aes(x = "CD4 EM signature", y = reorder(Cell, rho), fill = rho)) +
+  geom_tile() +
+  geom_text(aes(label = sprintf("%.2f", rho)), size = 3) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+  labs(y = NULL, x = NULL) +
+  theme_classic()
+
+```
+
+## Saving the plot
+
+```{r}
+
+ciber_cors_vis_final <- wrap_elements(ciber_cors_vis) +
+  # ggtitle("Supplementary Figure 26: Correlation between the C2-Sub1 CD4 effector-memory transcriptional\nprogram and CIBERSORT-inferred immune cell populations in TCGA breast cancer.") +
+  theme(plot.title = element_text(size = 8))
+
+ggsave(filename = "../../../Testing results/Supplementary Figure 24.pdf", 
+       plot = ciber_cors_vis_final, device = "pdf", width = 6.85, height = (1.762)*5, units = "in", dpi = 300)
+
+ggsave(filename = "../../../Testing results/Supplementary Figure 24.png", 
+       plot = ciber_cors_vis_final, device = "png", width = 6.85, height = (1.762)*5, units = "in", dpi = 300)
+
+
+```

@@ -1,0 +1,637 @@
+---
+title: "Evaluating ClustoCell's Performance in finding novel biology"
+author: "Adrian Salavaty"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(pROC)
+library(umap)
+library(cluster)
+library(ggplot2)
+library(dplyr)
+library(splatter)
+library(Seurat)
+library(tidyverse)
+library(scplotter)
+library(scran)
+library(scater)
+library(Matrix)
+library(SeuratDisk)
+library(hdf5r)
+library(patchwork)
+library(paletteer)
+library(hrbrthemes)
+library(scales)
+
+```
+
+# Introduction
+
+Script for evaluation of ClustoCell's Performance in finding novel biology.
+
+# Function Defintion
+
+We first define some helper functions.
+
+```{r}
+
+# Personalized Theme function
+
+styled_theme <- function(
+  style = c("academic", "minimal", "modern", "dark", "classic", "void"),
+  border_mode = c("default", "all", "none"),
+  title_align = c("center", "left", "right"),
+  legends_to_drop = NULL,
+  axes_title_drop = FALSE,
+  legend_position = c("default", "top", "bottom", "left", "right", "inside"),
+  axis_title_face = c("regular", "bold"),
+  x_axis_text_angle = 45,
+  x_axis_text_y = -0.3,
+  remove_margin = c("none", "bottom", "all", "top", "left", "right")
+) {
+  style <- match.arg(style)
+  border_mode <- match.arg(border_mode)
+  title_align <- match.arg(title_align)
+  legend_position <- match.arg(legend_position)
+  axis_title_face <- match.arg(axis_title_face)
+  remove_margin <- match.arg(remove_margin)
+
+  base_font <- "Helvetica"
+  align_map <- c(left = 0, center = 0.5, right = 1)
+  hjust_val <- align_map[title_align]
+  thin_size <- 0.3  
+
+  # Decide axis title face
+  axis_face_val <- ifelse(axis_title_face == "bold", "bold", "plain")
+
+  # Base theme selection
+  if (style == "void") {
+    theme_out <- theme_classic(base_size = 13, base_family = base_font) +
+      theme(
+        axis.title.x = element_blank(),  
+        axis.title.y = element_blank(),  
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "academic") {
+    theme_out <- theme_minimal(base_size = 14, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 16, hjust = hjust_val),
+        plot.subtitle = element_text(size = 13, hjust = hjust_val, color = "grey30"),
+        plot.caption = element_text(size = 10, hjust = 1, color = "grey40"),
+        axis.title = element_text(face = axis_face_val, size = 13),
+        axis.text = element_text(size = 12, color = "black"),
+        panel.grid.major = element_line(color = "grey80", size = thin_size),
+        panel.grid.minor = element_blank(),
+        legend.position = "right",
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "minimal") {
+    theme_out <- theme_minimal(base_size = 13, base_family = base_font) +
+      theme(
+        panel.grid = element_blank(),
+        axis.line = element_line(color = "black", size = thin_size),
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.text = element_text(color = "black"),
+        axis.title = element_text(face = axis_face_val),
+        legend.position = "none",
+        legend.title = element_text(face = "italic")
+      )
+  } else if (style == "modern") {
+    theme_out <- theme_light(base_size = 13, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(color = "grey80", linetype = "dashed", size = thin_size),
+        panel.grid.minor = element_blank(),
+        legend.position = "bottom",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "dark") {
+    theme_out <- theme_minimal(base_size = 13, base_family = base_font) +
+      theme(
+        plot.background = element_rect(fill = "black", color = NA),
+        panel.background = element_rect(fill = "black", color = NA),
+        panel.grid.major = element_line(color = "grey30", size = thin_size),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, color = "white", hjust = hjust_val),
+        plot.subtitle = element_text(color = "grey80", hjust = hjust_val),
+        axis.text = element_text(color = "white"),
+        axis.title = element_text(color = "white", face = axis_face_val),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.text = element_text(color = "white"),
+        legend.title = element_text(color = "white", face = "italic"),
+        axis.line = element_line(color = "white", size = thin_size)
+      )
+  } else if (style == "classic") {
+    theme_out <- theme_classic(base_size = 13, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  }
+
+  # Apply border mode
+  if (border_mode == "all") {
+    theme_out <- theme_out + theme(panel.border = element_rect(color = "black", fill = NA, size = thin_size))
+  } else if (border_mode == "none") {
+    theme_out <- theme_out + theme(panel.border = element_blank(), axis.line = element_blank())
+  }
+
+  # Drop axes titles if requested
+  if (axes_title_drop) {
+    theme_out <- theme_out + theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+  }
+
+  # Override x-axis text angle and vertical position
+  theme_out <- theme_out + theme(
+    axis.text.x = element_text(
+      angle = x_axis_text_angle,
+      vjust = 1,
+      hjust = 1,
+      margin = margin(t = x_axis_text_y)
+    )
+  )
+
+  # Handle margin removal
+  if (remove_margin == "all") {
+    theme_out <- theme_out + theme(plot.margin = margin(0, 0, 0, 0))
+  } else if (remove_margin == "top") {
+    theme_out <- theme_out + theme(plot.margin = margin(t = 0))
+  } else if (remove_margin == "bottom") {
+    theme_out <- theme_out + theme(plot.margin = margin(b = 0))
+  } else if (remove_margin == "left") {
+    theme_out <- theme_out + theme(plot.margin = margin(l = 0))
+  } else if (remove_margin == "right") {
+    theme_out <- theme_out + theme(plot.margin = margin(r = 0))
+  }
+  # if "none", do nothing
+
+  # Legend positioning override
+  if (legend_position != "default") {
+    if (legend_position == "inside") {
+      theme_out <- theme_out + theme(
+        legend.position = c(0.98, 0.98),
+        legend.justification = c("right", "top"),
+        legend.direction = "vertical"
+      )
+    } else {
+      horiz <- legend_position %in% c("top", "bottom")
+      theme_out <- theme_out + theme(
+        legend.position = legend_position,
+        legend.direction = if (horiz) "horizontal" else "vertical"
+      )
+    }
+  }
+
+  # Return theme + guides if needed
+  if (!is.null(legends_to_drop)) {
+    drop_list <- lapply(legends_to_drop, function(x) "none")
+    names(drop_list) <- legends_to_drop
+    return(list(theme_out, guides(.list = drop_list)))
+  } else {
+    return(theme_out)
+  }
+}
+
+#____________
+
+# Label plot
+label_plt <- function(label = "Label", size = 1) {
+  ggplot(data.frame(x = 1, y = 1), aes(x = x, y = y)) +
+    # Draw a single vertical bar
+    geom_col(width = 0.6, fill = "lightgrey", color = "black") +
+    # Add vertical text (angle=90)
+    annotate("text", x = 1, y = 0.5, label = label, size = size,
+             angle = 90, size = 6, vjust = 0.5, hjust = 0.5) +
+    # Remove all extra space
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0), limits = c(0, 1)) +
+    theme_void(base_size = 14) +             # no axes, ticks, labels
+    theme(
+        plot.margin = margin(0, 0, 0, 0),      # remove outside margins
+        panel.spacing = unit(0, "pt"),         # remove panel padding
+        plot.background = element_blank(),     # no background
+        panel.background = element_blank()
+    )
+}
+
+#__________________________________________________________________
+
+# Box plot with stats
+
+make_facet_boxplot_with_stats <- function(
+    df,
+    x = "group",
+    y = "value",
+    fill = NULL,
+    palette = NULL,
+    facet.by = NULL,
+    scales = "free_y",
+    facet.nrow = NULL,       
+    facet.ncol = NULL,      
+    alpha = 0.8,
+    xlab = NULL,
+    ylab = NULL,
+    subtitle = NULL,
+    tag = NULL,
+    jitter.width = 0.15,
+    jitter.size = 0.35,
+    jitter.alpha = 0.6,
+    method = "wilcox.test",
+    p.adjust.method = "none",
+    hide.ns = FALSE,
+    base_size = 10
+) {
+
+  library(dplyr)
+  library(ggpubr)
+  library(rstatix)
+  library(ggplot2)
+
+  # ----------------------------
+  # 1. Statistical test per facet
+  # ----------------------------
+  stat.test <- df %>%
+    group_by(!!sym(facet.by)) %>%
+    rstatix::wilcox_test(as.formula(paste(y, "~", x))) %>%
+    adjust_pvalue(method = p.adjust.method) %>%
+    add_significance()
+
+  # Add xy positions (critical for facetted layout)
+  stat.test <- stat.test %>% add_xy_position(x = x)
+
+  # ----------------------------
+  # 2. Build ggpubr boxplot
+  # ----------------------------
+  p <- ggpubr::ggboxplot(
+    df,
+    x = x,
+    y = y,
+    fill = fill,
+    alpha = alpha,
+    palette = palette,
+    facet.by = facet.by,
+    scales = scales,
+    nrow = facet.nrow,  
+    ncol = facet.ncol,   
+    outlier.shape = NA
+  ) +
+    geom_jitter(
+      width = jitter.width,
+      size = jitter.size,
+      alpha = jitter.alpha
+    ) +
+    labs(
+      x = xlab,
+      y = ylab,
+      subtitle = subtitle,
+      tag = tag
+    ) +
+    theme_classic(base_size = base_size) +
+    theme(
+      plot.subtitle = element_text(size = 7),
+      text = element_text(size = 6),
+      strip.text = element_text(size = 5.5),
+      plot.tag = element_text(size = 7, face = "bold"),
+      axis.title.y = element_text(size = 7),
+      plot.margin = margin(0, 5, 0, 5),
+      legend.position = "none"
+    )
+
+  # ----------------------------------
+  # 3. Add p-value stars to the plot
+  # ----------------------------------
+  p <- p + stat_pvalue_manual(
+    stat.test,
+    label = "p.adj.signif",
+    hide.ns = hide.ns,
+    size = 2.2,
+    tip.length = 0.01
+  )
+
+  return(p)
+}
+
+
+```
+
+
+```{r}
+
+# Concordance = 100*Sum(rowMax)/N
+
+library(paletteer)
+
+paste(as.vector(col2rgb("#0000CCFF")), collapse = " ")
+
+# https://pmassicotte.github.io/paletteer_gallery/
+
+paletteer::paletteer_d("MetBrewer::Austria", 7)
+#A40000FF #16317DFF #007E2FFF #FFCD12FF #B86092FF #721B3EFF #00B7A7FF 
+
+plotthis::palette_list %>% names()
+
+# Best pals from ggsci: pal_npg (10), pal_d3 (10), pal_ucscgb (26), pal_igv (51)
+
+# "#FF0000FF" "#FF9900FF" "#FFCC00FF" "#00FF00FF" "#6699FFFF" "#CC33FFFF" "#99991EFF" "#999999FF" "#FF00CCFF" "#CC0000FF" "#FFCCCCFF" "#FFFF00FF" "#CCFF00FF" "#358000FF" "#0000CCFF" "#99CCFFFF" "#00FFFFFF"
+# "#CCFFFFFF" "#9900CCFF" "#CC99FFFF" "#996600FF" "#666600FF" "#666666FF" "#CCCCCCFF" "#79CC3DFF" "#CCCC99FF"
+
+# "#1F77B4FF" "#FF7F0EFF" "#2CA02CFF" "#D62728FF" "#9467BDFF" "#8C564BFF" "#E377C2FF" "#7F7F7FFF" "#BCBD22FF" "#17BECFFF"
+
+# NPG colors:
+# "#E64B35FF" "#4DBBD5FF" "#00A087FF" "#3C5488FF" "#F39B7FFF" "#8491B4FF" "#91D1C2FF" "#DC0000FF" "#7E6148FF" "#B09C85FF"
+
+# "#5050FFFF" "#CE3D32FF" "#749B58FF" "#F0E685FF" "#466983FF" "#BA6338FF" "#5DB1DDFF" "#802268FF" "#6BD76BFF" "#D595A7FF" "#924822FF" "#837B8DFF" "#C75127FF" "#D58F5CFF" "#7A65A5FF" "#E4AF69FF" "#3B1B53FF"
+# "#CDDEB7FF" "#612A79FF" "#AE1F63FF" "#E7C76FFF" "#5A655EFF" "#CC9900FF" "#99CC00FF" "#A9A9A9FF" "#CC9900FF" "#99CC00FF" "#33CC00FF" "#00CC33FF" "#00CC99FF" "#0099CCFF" "#0A47FFFF" "#4775FFFF" "#FFC20AFF"
+# "#FFD147FF" "#990033FF" "#991A00FF" "#996600FF" "#809900FF" "#339900FF" "#00991AFF" "#009966FF" "#008099FF" "#003399FF" "#1A0099FF" "#660099FF" "#990080FF" "#D60047FF" "#FF1463FF" "#00D68FFF"
+
+ # "#5050FFFF" "#CE3D32FF" "#749B58FF" "#F0E685FF" "#466983FF" "#BA6338FF" "#5DB1DDFF" "#802268FF" "#6BD76BFF" "#D595A7FF"
+
+# Define the color palettes
+
+npg_pal <- ggsci::pal_npg()(10)
+npg_reverse_pal <- rev(ggsci::pal_npg("nrc")(10))
+
+```
+
+A function for converting count df to sparse matrix
+
+```{r}
+
+library(Rcpp)
+library(RcppArmadillo)
+
+Rcpp::sourceCpp(code = '
+#define ARMA_64BIT_WORD 1
+#include <RcppArmadillo.h>
+// [[Rcpp::depends(RcppArmadillo)]]
+
+// [[Rcpp::export]]
+Rcpp::S4 denseToSparse(Rcpp::DataFrame& df) {  // Pass by reference to allow in-place modification
+  int nrows = df.nrows();
+  int ncols = df.size();
+
+  arma::sp_mat sparse(nrows, ncols);
+
+  for (int col = 0; col < ncols; ++col) {
+    arma::vec this_col = Rcpp::as<arma::vec>(df[col]);  // Wrap without copying
+    sparse.col(col) = this_col;  // Assigns only non-zeros to sparse
+    df[col] = R_NilValue;  // Free the column memory progressively
+  }
+
+  return Rcpp::wrap(sparse);  // Returns as dgCMatrix S4 object
+}
+')
+
+```
+
+Concordance = 100*Sum(rowMax)/N
+
+# Breast Cancer Single-Cell Map (bcscm)
+
+## Data preparation
+
+The data was downloaded from https://lambrechtslab.sites.vib.be/en/single-cell
+https://www.nature.com/articles/s41591-021-01323-8
+
+### T-/NK cells
+
+```{r}
+
+bcscm_tcell_counts <- read_rds("../../../Benchmarking/Test Datasets/breast cancer single-cell Map/1864-counts_tcell_cohort1.rds")
+bcscm_tcell_meta <- fread("../../../Benchmarking/Test Datasets/breast cancer single-cell Map/1870-BIOKEY_metaData_tcells_cohort1_web.csv")
+
+ncol(bcscm_tcell_counts) == nrow(bcscm_tcell_meta) # TRUE
+all(colnames(bcscm_tcell_counts) == bcscm_tcell_meta$Cell) # FALSE
+all(colnames(bcscm_tcell_counts) %in% bcscm_tcell_meta$Cell) # TRUE
+bcscm_tcell_meta <- bcscm_tcell_meta[match(colnames(bcscm_tcell_counts), bcscm_tcell_meta$Cell),]
+all(colnames(bcscm_tcell_counts) == bcscm_tcell_meta$Cell) # TRUE
+
+bcscm_tcell_so <- CreateSeuratObject(bcscm_tcell_counts, meta.data = bcscm_tcell_meta, min.cells = 3, min.features = 200)
+qs2::qs_save(object = bcscm_tcell_so, file = "../../../Benchmarking/Test Datasets/breast cancer single-cell Map/bcscm_tcell_so.qs2")
+
+bcscm_tcell_so$cellSubType <- gsub("Proliferating", "Prolif", bcscm_tcell_so$cellSubType)
+
+bcscm_tcell_so <- NormalizeData(bcscm_tcell_so, normalization.method = "LogNormalize", scale.factor = 10000)
+bcscm_tcell_so <- FindVariableFeatures(bcscm_tcell_so, selection.method = "vst", nfeatures = 2000)
+
+qs2::qs_save(object = bcscm_tcell_so, file = "../../../Benchmarking/Test Datasets/breast cancer single-cell Map/bcscm_tcell_so.qs2")
+
+bcscm_tcell_ClustoCell <- clustoCell(data = bcscm_tcell_so, sketch = T, sketch_ncells = 25000, refine_transferred_subClusters = TRUE, 
+                                     high_quantile = 0.25, low_quantile = 0.25, subset_to_HVG = F, seed = 121)
+
+qs2::qs_save(object = bcscm_tcell_ClustoCell, file = "../../../Benchmarking/Test Datasets/breast cancer single-cell Map/bcscm_tcell_ClustoCell.qs2")
+
+bcscm_tcell_so <- addClustoData(obj = bcscm_tcell_so, clustoCell = bcscm_tcell_ClustoCell, major_cluster_name = "ClustoCell", sub_cluster_name = "SubClustoCell")
+
+# Finding the dataset-level markers and using them for dim reduction
+bcscm_tcell_markers <- getDatasetMarkers(obj = bcscm_tcell_ClustoCell, 
+                                         clusters = T, sub_clusters = T,
+                                         positive_markers = T, negative_markers = T, 
+                                         medium_markers = F, 
+                                         thresh_mode = "n", pos_thresh = 200, neg_thresh = 50)
+
+bcscm_tcell_so <- ScaleData(bcscm_tcell_so, features = bcscm_tcell_markers$combined_markers)
+bcscm_tcell_so <- RunPCA(bcscm_tcell_so, features = bcscm_tcell_markers$combined_markers)
+ElbowPlot(bcscm_tcell_so, ndims = 50)
+# bcscm_tcell_so <- FindNeighbors(bcscm_tcell_so, dims = 1:16)
+# bcscm_tcell_so <- FindClusters(bcscm_tcell_so, resolution = 0.5)
+bcscm_tcell_so <- RunUMAP(bcscm_tcell_so, dims = 1:16)
+
+qs2::qs_save(object = bcscm_tcell_so, file = "../../../Benchmarking/Test Datasets/breast cancer single-cell Map/bcscm_tcell_so.qs2")
+
+bcscm_tcell_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/breast cancer single-cell Map/bcscm_tcell_so.qs2")
+bcscm_tcell_ClustoCell <- qs2::qs_read("../../../Benchmarking/Test Datasets/breast cancer single-cell Map/bcscm_tcell_ClustoCell.qs2")
+
+```
+
+#### Inspecting the data
+
+Checking the metadata and confusion tables
+
+```{r}
+
+head(bcscm_tcell_so@meta.data %>% dplyr::select(-Cell))
+
+# ClustoCell clusters and subclusters
+table(bcscm_tcell_so$ClustoCell)
+table(bcscm_tcell_so$SubClustoCell)
+
+# Author annotations
+table(bcscm_tcell_so@meta.data$cellSubType)
+table(bcscm_tcell_so@meta.data$expansion)
+table(bcscm_tcell_so@meta.data$timepoint)
+table(bcscm_tcell_so@meta.data$BC_type)
+
+# Confusion of author annotations with ClustoCell
+table(bcscm_tcell_so$cellSubType, bcscm_tcell_so$ClustoCell)
+table(bcscm_tcell_so$ClustoCell, bcscm_tcell_so$expansion)
+table(bcscm_tcell_so$ClustoCell, bcscm_tcell_so$BC_type)
+table(bcscm_tcell_so$ClustoCell, bcscm_tcell_so$timepoint)
+
+# Confusion of author annotations with SubClustoCell
+table(bcscm_tcell_so$cellSubType, bcscm_tcell_so$SubClustoCell)
+table(bcscm_tcell_so$SubClustoCell, bcscm_tcell_so$expansion)
+table(bcscm_tcell_so$SubClustoCell, bcscm_tcell_so$BC_type)
+table(bcscm_tcell_so$SubClustoCell, bcscm_tcell_so$timepoint)
+
+```
+
+Checking the markers of clusters and subclusters
+
+```{r}
+
+# Major Clusters
+sapply(names(bcscm_tcell_ClustoCell$markers$major_clusters$cluster_specific$positive_markers), 
+       function(i) { 
+         tmp_markers <- bcscm_tcell_ClustoCell$markers$major_clusters$cluster_specific$positive_markers[[i]] %>% 
+           dplyr::slice(1:30) %>% dplyr::pull(Feature)
+         cat(paste0(i, ": "))
+          cat(paste0(tmp_markers, collapse = ", "))
+          cat("\n\n")
+          }
+       )
+
+# Sub-clusters
+sapply(names(bcscm_tcell_ClustoCell$markers$sub_clusters), 
+       function(i) { 
+         cat(paste0(i, ": "))
+         cat("\n")
+
+         sapply(names(bcscm_tcell_ClustoCell$markers$sub_clusters[[i]]$positive_markers), function(j) {
+           tmp_markers <- (bcscm_tcell_ClustoCell$markers$sub_clusters[[i]]$positive_markers)[[j]] %>% 
+             dplyr::slice(1:30) %>% dplyr::pull(Feature)
+           cat(paste0(j, ": "))
+           cat(paste0(tmp_markers, collapse = ", "))
+           cat("\n\n")
+           })
+         cat("\n\n\n")
+         }
+       )
+
+```
+
+```{r}
+
+# Define expanded marker signatures (original + reviewer-suggested genes)
+sig_panels_bcscm_tcell <- list(
+  `C4-Sub4` = c("PDCD1", "LAG3", "CTLA4", "TIGIT", "CXCL13", "TNFRSF18", "CTSD", "PRDM1",
+                "CXCR5", "BCL6", "CD40LG", "TNFRSF4", "IL21", "ICOS", "CCR2", "CCR5", "MAF"),
+  `C5-Sub2` = c("CD8A", "GZMB", "LAG3", "TIGIT", "CXCL13", "PRF1", "GZMH", "NKG7",
+                "HLA-DRA", "HLA-DRB1", "HLA-DRB5", "IL2RA", "TNFRSF4", "ICOS",
+                "NR4A1", "BCL2L1", "BCL2A1", "BCL2", "TCF7", "LEF1"),
+  `C5-Sub3` = c("CD8A", "GZMB", "LAG3", "CXCL13", "GNLY", "PRF1", "GZMH", "NKG7",
+                "CCL4", "HLA-DRA", "HLA-DRB1", "HLA-DRB5", "TOX", "ENTPD1",
+                "CD101", "CXCR6", "GZMK", "CX3CR1"),
+  `C2-Sub1` = c("GZMK", "KLRB1", "CXCL13", "ANXA1", "MTRNR2L8",
+                "CD4", "IL7R", "ITGB1", "CD40LG")
+)
+
+# Compute average expression of all markers in each subcluster
+sig_genes <- unique(unlist(sig_panels_bcscm_tcell))
+sig_panels_bcscm_tcell_avg_expr <- AverageExpression(
+  bcscm_tcell_pre,
+  group.by = "SubClustoCell",
+  features = sig_genes
+)$RNA
+
+# Restrict to the four predictive subclusters
+predictive_subs <- c("C4-Sub4", "C5-Sub2", "C5-Sub3", "C2-Sub1")
+sig_panels_bcscm_tcell_avg_expr <- sig_panels_bcscm_tcell_avg_expr[, predictive_subs]
+
+# Prepare row annotation for the heatmap
+sig_panels_bcscm_tcell_gene_order <- unlist(sig_panels_bcscm_tcell)
+sig_panels_bcscm_tcell_group_labels <- rep(names(sig_panels_bcscm_tcell),
+                                           lengths(sig_panels_bcscm_tcell))
+sig_panels_bcscm_tcell_ann_row <- data.frame(
+  Gene = sig_panels_bcscm_tcell_gene_order,
+  Signature = sig_panels_bcscm_tcell_group_labels
+)
+# Keep unique genes with their first-assigned signature
+sig_panels_bcscm_tcell_ann_row <- sig_panels_bcscm_tcell_ann_row %>%
+  dplyr::distinct(Gene, .keep_all = TRUE)
+rownames(sig_panels_bcscm_tcell_ann_row) <- sig_panels_bcscm_tcell_ann_row$Gene
+
+# Scale each gene (row) across subclusters
+expr_matrix <- sig_panels_bcscm_tcell_avg_expr[sig_panels_bcscm_tcell_ann_row$Gene, ]
+sig_panels_bcscm_tcell_sig_scaled <- t(scale(t(expr_matrix)))
+
+# Ensure the scaled matrix rows match the annotation rows
+sig_panels_bcscm_tcell_sig_scaled <- sig_panels_bcscm_tcell_sig_scaled[rownames(sig_panels_bcscm_tcell_ann_row), ]
+
+# Convert signature to factor to preserve panel order
+sig_panels_bcscm_tcell_ann_row$Signature <- factor(
+  sig_panels_bcscm_tcell_ann_row$Signature,
+  levels = names(sig_panels_bcscm_tcell)
+)
+
+# Load ggheatmap (from ggalign package) and plot
+library(ggalign)
+sig_panels_bcscm_tcell_ggheatmap <- ggheatmap(sig_panels_bcscm_tcell_sig_scaled) +
+  scale_fill_gradient2(
+    low = "navy", mid = "white", high = "firebrick3", midpoint = 0,
+    name = "Scaled\nExpr."
+  ) +
+  labs(subtitle = "Selected Subcluster Markers (Expanded Panel)", tag = NULL) +
+  theme(
+    plot.margin = margin(t = 0, r = 0, b = 0, l = 0),
+    axis.title.y = element_blank(),
+    axis.text.x = element_text(angle = 25, vjust = 0.7, face = "plain", color = "black"),
+    axis.text = element_text(size = 6),
+    text = element_text(size = 7.5),
+    title = element_text(size = 7.5),
+    plot.title = element_text(size = 7.5),
+    plot.subtitle = element_text(size = 7.5, vjust = 0),
+    axis.title = element_text(size = 7),
+    plot.tag = element_text(size = 7.5, face = "bold"),
+    legend.title = element_text(size = 6),
+    legend.margin = margin(t = 0, r = 0, b = 0, l = 0),
+    legend.box.margin = margin(0, 0, 0, 0),
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.width = unit(0.25, "cm"),
+    legend.key.height = unit(0.4, "cm")
+  )
+
+```
+
+## Combining the plots for main figure
+
+```{r}
+
+sig_panels_bcscm_tcell_ggheatmap_final <- wrap_elements(ggalign::ggalignGrob(sig_panels_bcscm_tcell_ggheatmap)) +
+  # ggtitle("Supplementary Figure 23: Expanded canonical-marker panel resolves the cell-state identity of \nthe four expansion-enriched predictive subclusters and supports their refined annotation.") +
+  theme(plot.title = element_text(size = 8))
+
+ggsave(filename = "../../../Testing results/Supplementary Figure 21.pdf", 
+       plot = sig_panels_bcscm_tcell_ggheatmap_final, device = "pdf", width = 6.85, height = (1.762)*5, units = "in", dpi = 300)
+
+ggsave(filename = "../../../Testing results/Supplementary Figure 21.png", 
+       plot = sig_panels_bcscm_tcell_ggheatmap_final, device = "png", width = 6.85, height = (1.762)*5, units = "in", dpi = 300)
+
+
+```

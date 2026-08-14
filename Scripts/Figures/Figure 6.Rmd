@@ -1,0 +1,1967 @@
+---
+title: "Evaluating ClustoCell's Performance in finding novel biology"
+author: "Adrian Salavaty"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(pROC)
+library(umap)
+library(cluster)
+library(ggplot2)
+library(dplyr)
+library(splatter)
+library(Seurat)
+library(tidyverse)
+library(scplotter)
+library(scran)
+library(scater)
+library(Matrix)
+library(SeuratDisk)
+library(hdf5r)
+library(patchwork)
+library(paletteer)
+library(hrbrthemes)
+library(scales)
+
+```
+
+# Introduction
+
+Script for evaluation of ClustoCell's Performance in finding novel biology.
+
+# Function Defintion
+
+We first define some helper functions.
+
+```{r}
+
+# Personalized Theme function
+
+styled_theme <- function(
+  style = c("academic", "minimal", "modern", "dark", "classic", "void"),
+  border_mode = c("default", "all", "none"),
+  title_align = c("center", "left", "right"),
+  legends_to_drop = NULL,
+  axes_title_drop = FALSE,
+  legend_position = c("default", "top", "bottom", "left", "right", "inside"),
+  axis_title_face = c("regular", "bold"),
+  x_axis_text_angle = 45,
+  x_axis_text_y = -0.3,
+  remove_margin = c("none", "bottom", "all", "top", "left", "right")
+) {
+  style <- match.arg(style)
+  border_mode <- match.arg(border_mode)
+  title_align <- match.arg(title_align)
+  legend_position <- match.arg(legend_position)
+  axis_title_face <- match.arg(axis_title_face)
+  remove_margin <- match.arg(remove_margin)
+
+  base_font <- "Helvetica"
+  align_map <- c(left = 0, center = 0.5, right = 1)
+  hjust_val <- align_map[title_align]
+  thin_size <- 0.3  
+
+  # Decide axis title face
+  axis_face_val <- ifelse(axis_title_face == "bold", "bold", "plain")
+
+  # Base theme selection
+  if (style == "void") {
+    theme_out <- theme_classic(base_size = 13, base_family = base_font) +
+      theme(
+        axis.title.x = element_blank(),  
+        axis.title.y = element_blank(),  
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "academic") {
+    theme_out <- theme_minimal(base_size = 14, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 16, hjust = hjust_val),
+        plot.subtitle = element_text(size = 13, hjust = hjust_val, color = "grey30"),
+        plot.caption = element_text(size = 10, hjust = 1, color = "grey40"),
+        axis.title = element_text(face = axis_face_val, size = 13),
+        axis.text = element_text(size = 12, color = "black"),
+        panel.grid.major = element_line(color = "grey80", size = thin_size),
+        panel.grid.minor = element_blank(),
+        legend.position = "right",
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "minimal") {
+    theme_out <- theme_minimal(base_size = 13, base_family = base_font) +
+      theme(
+        panel.grid = element_blank(),
+        axis.line = element_line(color = "black", size = thin_size),
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.text = element_text(color = "black"),
+        axis.title = element_text(face = axis_face_val),
+        legend.position = "none",
+        legend.title = element_text(face = "italic")
+      )
+  } else if (style == "modern") {
+    theme_out <- theme_light(base_size = 13, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(color = "grey80", linetype = "dashed", size = thin_size),
+        panel.grid.minor = element_blank(),
+        legend.position = "bottom",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "dark") {
+    theme_out <- theme_minimal(base_size = 13, base_family = base_font) +
+      theme(
+        plot.background = element_rect(fill = "black", color = NA),
+        panel.background = element_rect(fill = "black", color = NA),
+        panel.grid.major = element_line(color = "grey30", size = thin_size),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, color = "white", hjust = hjust_val),
+        plot.subtitle = element_text(color = "grey80", hjust = hjust_val),
+        axis.text = element_text(color = "white"),
+        axis.title = element_text(color = "white", face = axis_face_val),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.text = element_text(color = "white"),
+        legend.title = element_text(color = "white", face = "italic"),
+        axis.line = element_line(color = "white", size = thin_size)
+      )
+  } else if (style == "classic") {
+    theme_out <- theme_classic(base_size = 13, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  }
+
+  # Apply border mode
+  if (border_mode == "all") {
+    theme_out <- theme_out + theme(panel.border = element_rect(color = "black", fill = NA, size = thin_size))
+  } else if (border_mode == "none") {
+    theme_out <- theme_out + theme(panel.border = element_blank(), axis.line = element_blank())
+  }
+
+  # Drop axes titles if requested
+  if (axes_title_drop) {
+    theme_out <- theme_out + theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+  }
+
+  # Override x-axis text angle and vertical position
+  theme_out <- theme_out + theme(
+    axis.text.x = element_text(
+      angle = x_axis_text_angle,
+      vjust = 1,
+      hjust = 1,
+      margin = margin(t = x_axis_text_y)
+    )
+  )
+
+  # Handle margin removal
+  if (remove_margin == "all") {
+    theme_out <- theme_out + theme(plot.margin = margin(0, 0, 0, 0))
+  } else if (remove_margin == "top") {
+    theme_out <- theme_out + theme(plot.margin = margin(t = 0))
+  } else if (remove_margin == "bottom") {
+    theme_out <- theme_out + theme(plot.margin = margin(b = 0))
+  } else if (remove_margin == "left") {
+    theme_out <- theme_out + theme(plot.margin = margin(l = 0))
+  } else if (remove_margin == "right") {
+    theme_out <- theme_out + theme(plot.margin = margin(r = 0))
+  }
+  # if "none", do nothing
+
+  # Legend positioning override
+  if (legend_position != "default") {
+    if (legend_position == "inside") {
+      theme_out <- theme_out + theme(
+        legend.position = c(0.98, 0.98),
+        legend.justification = c("right", "top"),
+        legend.direction = "vertical"
+      )
+    } else {
+      horiz <- legend_position %in% c("top", "bottom")
+      theme_out <- theme_out + theme(
+        legend.position = legend_position,
+        legend.direction = if (horiz) "horizontal" else "vertical"
+      )
+    }
+  }
+
+  # Return theme + guides if needed
+  if (!is.null(legends_to_drop)) {
+    drop_list <- lapply(legends_to_drop, function(x) "none")
+    names(drop_list) <- legends_to_drop
+    return(list(theme_out, guides(.list = drop_list)))
+  } else {
+    return(theme_out)
+  }
+}
+
+#____________
+
+# Label plot
+label_plt <- function(label = "Label", size = 1) {
+  ggplot(data.frame(x = 1, y = 1), aes(x = x, y = y)) +
+    # Draw a single vertical bar
+    geom_col(width = 0.6, fill = "lightgrey", color = "black") +
+    # Add vertical text (angle=90)
+    annotate("text", x = 1, y = 0.5, label = label, size = size,
+             angle = 90, size = 6, vjust = 0.5, hjust = 0.5) +
+    # Remove all extra space
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0), limits = c(0, 1)) +
+    theme_void(base_size = 14) +             # no axes, ticks, labels
+    theme(
+        plot.margin = margin(0, 0, 0, 0),      # remove outside margins
+        panel.spacing = unit(0, "pt"),         # remove panel padding
+        plot.background = element_blank(),     # no background
+        panel.background = element_blank()
+    )
+}
+
+#__________________________________________________________________
+
+# Box plot with stats
+
+make_facet_boxplot_with_stats <- function(
+    df,
+    x = "group",
+    y = "value",
+    fill = NULL,
+    palette = NULL,
+    facet.by = NULL,
+    scales = "free_y",
+    facet.nrow = NULL,       
+    facet.ncol = NULL,      
+    alpha = 0.8,
+    xlab = NULL,
+    ylab = NULL,
+    subtitle = NULL,
+    tag = NULL,
+    jitter.width = 0.15,
+    jitter.size = 0.35,
+    jitter.alpha = 0.6,
+    method = "wilcox.test",
+    p.adjust.method = "none",
+    hide.ns = FALSE,
+    base_size = 10
+) {
+
+  library(dplyr)
+  library(ggpubr)
+  library(rstatix)
+  library(ggplot2)
+
+  # ----------------------------
+  # 1. Statistical test per facet
+  # ----------------------------
+  stat.test <- df %>%
+    group_by(!!sym(facet.by)) %>%
+    rstatix::wilcox_test(as.formula(paste(y, "~", x))) %>%
+    adjust_pvalue(method = p.adjust.method) %>%
+    add_significance()
+
+  # Add xy positions (critical for facetted layout)
+  stat.test <- stat.test %>% add_xy_position(x = x)
+
+  # ----------------------------
+  # 2. Build ggpubr boxplot
+  # ----------------------------
+  p <- ggpubr::ggboxplot(
+    df,
+    x = x,
+    y = y,
+    fill = fill,
+    alpha = alpha,
+    palette = palette,
+    facet.by = facet.by,
+    scales = scales,
+    nrow = facet.nrow,  
+    ncol = facet.ncol,   
+    outlier.shape = NA
+  ) +
+    geom_jitter(
+      width = jitter.width,
+      size = jitter.size,
+      alpha = jitter.alpha
+    ) +
+    labs(
+      x = xlab,
+      y = ylab,
+      subtitle = subtitle,
+      tag = tag
+    ) +
+    theme_classic(base_size = base_size) +
+    theme(
+      plot.subtitle = element_text(size = 7),
+      text = element_text(size = 6),
+      strip.text = element_text(size = 5.5),
+      plot.tag = element_text(size = 7, face = "bold"),
+      axis.title.y = element_text(size = 7),
+      plot.margin = margin(0, 5, 0, 5),
+      legend.position = "none"
+    )
+
+  # ----------------------------------
+  # 3. Add p-value stars to the plot
+  # ----------------------------------
+  p <- p + stat_pvalue_manual(
+    stat.test,
+    label = "p.adj.signif",
+    hide.ns = hide.ns,
+    size = 2.2,
+    tip.length = 0.01
+  )
+
+  return(p)
+}
+
+
+```
+
+
+```{r}
+
+# Concordance = 100*Sum(rowMax)/N
+
+library(paletteer)
+
+paste(as.vector(col2rgb("#0000CCFF")), collapse = " ")
+
+# https://pmassicotte.github.io/paletteer_gallery/
+
+paletteer::paletteer_d("MetBrewer::Austria", 7)
+#A40000FF #16317DFF #007E2FFF #FFCD12FF #B86092FF #721B3EFF #00B7A7FF 
+
+plotthis::palette_list %>% names()
+
+# Best pals from ggsci: pal_npg (10), pal_d3 (10), pal_ucscgb (26), pal_igv (51)
+
+# "#FF0000FF" "#FF9900FF" "#FFCC00FF" "#00FF00FF" "#6699FFFF" "#CC33FFFF" "#99991EFF" "#999999FF" "#FF00CCFF" "#CC0000FF" "#FFCCCCFF" "#FFFF00FF" "#CCFF00FF" "#358000FF" "#0000CCFF" "#99CCFFFF" "#00FFFFFF"
+# "#CCFFFFFF" "#9900CCFF" "#CC99FFFF" "#996600FF" "#666600FF" "#666666FF" "#CCCCCCFF" "#79CC3DFF" "#CCCC99FF"
+
+# "#1F77B4FF" "#FF7F0EFF" "#2CA02CFF" "#D62728FF" "#9467BDFF" "#8C564BFF" "#E377C2FF" "#7F7F7FFF" "#BCBD22FF" "#17BECFFF"
+
+# NPG colors:
+# "#E64B35FF" "#4DBBD5FF" "#00A087FF" "#3C5488FF" "#F39B7FFF" "#8491B4FF" "#91D1C2FF" "#DC0000FF" "#7E6148FF" "#B09C85FF"
+
+# "#5050FFFF" "#CE3D32FF" "#749B58FF" "#F0E685FF" "#466983FF" "#BA6338FF" "#5DB1DDFF" "#802268FF" "#6BD76BFF" "#D595A7FF" "#924822FF" "#837B8DFF" "#C75127FF" "#D58F5CFF" "#7A65A5FF" "#E4AF69FF" "#3B1B53FF"
+# "#CDDEB7FF" "#612A79FF" "#AE1F63FF" "#E7C76FFF" "#5A655EFF" "#CC9900FF" "#99CC00FF" "#A9A9A9FF" "#CC9900FF" "#99CC00FF" "#33CC00FF" "#00CC33FF" "#00CC99FF" "#0099CCFF" "#0A47FFFF" "#4775FFFF" "#FFC20AFF"
+# "#FFD147FF" "#990033FF" "#991A00FF" "#996600FF" "#809900FF" "#339900FF" "#00991AFF" "#009966FF" "#008099FF" "#003399FF" "#1A0099FF" "#660099FF" "#990080FF" "#D60047FF" "#FF1463FF" "#00D68FFF"
+
+ # "#5050FFFF" "#CE3D32FF" "#749B58FF" "#F0E685FF" "#466983FF" "#BA6338FF" "#5DB1DDFF" "#802268FF" "#6BD76BFF" "#D595A7FF"
+
+# Define the color palettes
+
+npg_pal <- ggsci::pal_npg()(10)
+npg_reverse_pal <- rev(ggsci::pal_npg("nrc")(10))
+
+```
+
+A function for converting count df to sparse matrix
+
+```{r}
+
+library(Rcpp)
+library(RcppArmadillo)
+
+Rcpp::sourceCpp(code = '
+#define ARMA_64BIT_WORD 1
+#include <RcppArmadillo.h>
+// [[Rcpp::depends(RcppArmadillo)]]
+
+// [[Rcpp::export]]
+Rcpp::S4 denseToSparse(Rcpp::DataFrame& df) {  // Pass by reference to allow in-place modification
+  int nrows = df.nrows();
+  int ncols = df.size();
+
+  arma::sp_mat sparse(nrows, ncols);
+
+  for (int col = 0; col < ncols; ++col) {
+    arma::vec this_col = Rcpp::as<arma::vec>(df[col]);  // Wrap without copying
+    sparse.col(col) = this_col;  // Assigns only non-zeros to sparse
+    df[col] = R_NilValue;  // Free the column memory progressively
+  }
+
+  return Rcpp::wrap(sparse);  // Returns as dgCMatrix S4 object
+}
+')
+
+```
+
+Concordance = 100*Sum(rowMax)/N
+
+# Breast Cancer Single-Cell Map (bcscm)
+
+## Data preparation
+
+The data was downloaded from https://lambrechtslab.sites.vib.be/en/single-cell
+https://www.nature.com/articles/s41591-021-01323-8
+
+### T-/NK cells
+
+```{r}
+
+bcscm_tcell_counts <- read_rds("../../../Benchmarking/Test Datasets/breast cancer single-cell Map/1864-counts_tcell_cohort1.rds")
+bcscm_tcell_meta <- fread("../../../Benchmarking/Test Datasets/breast cancer single-cell Map/1870-BIOKEY_metaData_tcells_cohort1_web.csv")
+
+ncol(bcscm_tcell_counts) == nrow(bcscm_tcell_meta) # TRUE
+all(colnames(bcscm_tcell_counts) == bcscm_tcell_meta$Cell) # FALSE
+all(colnames(bcscm_tcell_counts) %in% bcscm_tcell_meta$Cell) # TRUE
+bcscm_tcell_meta <- bcscm_tcell_meta[match(colnames(bcscm_tcell_counts), bcscm_tcell_meta$Cell),]
+all(colnames(bcscm_tcell_counts) == bcscm_tcell_meta$Cell) # TRUE
+
+bcscm_tcell_so <- CreateSeuratObject(bcscm_tcell_counts, meta.data = bcscm_tcell_meta, min.cells = 3, min.features = 200)
+qs2::qs_save(object = bcscm_tcell_so, file = "../../../Benchmarking/Test Datasets/breast cancer single-cell Map/bcscm_tcell_so.qs2")
+
+bcscm_tcell_so$cellSubType <- gsub("Proliferating", "Prolif", bcscm_tcell_so$cellSubType)
+
+bcscm_tcell_so <- NormalizeData(bcscm_tcell_so, normalization.method = "LogNormalize", scale.factor = 10000)
+bcscm_tcell_so <- FindVariableFeatures(bcscm_tcell_so, selection.method = "vst", nfeatures = 2000)
+
+qs2::qs_save(object = bcscm_tcell_so, file = "../../../Benchmarking/Test Datasets/breast cancer single-cell Map/bcscm_tcell_so.qs2")
+
+bcscm_tcell_ClustoCell <- clustoCell(data = bcscm_tcell_so, sketch = T, sketch_ncells = 25000, refine_transferred_subClusters = TRUE, 
+                                     high_quantile = 0.25, low_quantile = 0.25, subset_to_HVG = F, seed = 121)
+
+qs2::qs_save(object = bcscm_tcell_ClustoCell, file = "../../../Benchmarking/Test Datasets/breast cancer single-cell Map/bcscm_tcell_ClustoCell.qs2")
+
+bcscm_tcell_so <- addClustoData(obj = bcscm_tcell_so, clustoCell = bcscm_tcell_ClustoCell, major_cluster_name = "ClustoCell", sub_cluster_name = "SubClustoCell")
+
+# Finding the dataset-level markers and using them for dim reduction
+bcscm_tcell_markers <- getDatasetMarkers(obj = bcscm_tcell_ClustoCell, 
+                                         clusters = T, sub_clusters = T,
+                                         positive_markers = T, negative_markers = T, 
+                                         medium_markers = F, 
+                                         thresh_mode = "n", pos_thresh = 200, neg_thresh = 50)
+
+bcscm_tcell_so <- ScaleData(bcscm_tcell_so, features = bcscm_tcell_markers$combined_markers)
+bcscm_tcell_so <- RunPCA(bcscm_tcell_so, features = bcscm_tcell_markers$combined_markers)
+ElbowPlot(bcscm_tcell_so, ndims = 50)
+# bcscm_tcell_so <- FindNeighbors(bcscm_tcell_so, dims = 1:16)
+# bcscm_tcell_so <- FindClusters(bcscm_tcell_so, resolution = 0.5)
+bcscm_tcell_so <- RunUMAP(bcscm_tcell_so, dims = 1:16)
+
+qs2::qs_save(object = bcscm_tcell_so, file = "../../../Benchmarking/Test Datasets/breast cancer single-cell Map/bcscm_tcell_so.qs2")
+
+bcscm_tcell_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/breast cancer single-cell Map/bcscm_tcell_so.qs2")
+bcscm_tcell_ClustoCell <- qs2::qs_read("../../../Benchmarking/Test Datasets/breast cancer single-cell Map/bcscm_tcell_ClustoCell.qs2")
+
+```
+
+#### Inspecting the data
+
+Checking the metadata and confusion tables
+
+```{r}
+
+head(bcscm_tcell_so@meta.data %>% dplyr::select(-Cell))
+
+# ClustoCell clusters and subclusters
+table(bcscm_tcell_so$ClustoCell)
+table(bcscm_tcell_so$SubClustoCell)
+
+# Author annotations
+table(bcscm_tcell_so@meta.data$cellSubType)
+table(bcscm_tcell_so@meta.data$expansion)
+table(bcscm_tcell_so@meta.data$timepoint)
+table(bcscm_tcell_so@meta.data$BC_type)
+
+# Confusion of author annotations with ClustoCell
+table(bcscm_tcell_so$cellSubType, bcscm_tcell_so$ClustoCell)
+table(bcscm_tcell_so$ClustoCell, bcscm_tcell_so$expansion)
+table(bcscm_tcell_so$ClustoCell, bcscm_tcell_so$BC_type)
+table(bcscm_tcell_so$ClustoCell, bcscm_tcell_so$timepoint)
+
+# Confusion of author annotations with SubClustoCell
+table(bcscm_tcell_so$cellSubType, bcscm_tcell_so$SubClustoCell)
+table(bcscm_tcell_so$SubClustoCell, bcscm_tcell_so$expansion)
+table(bcscm_tcell_so$SubClustoCell, bcscm_tcell_so$BC_type)
+table(bcscm_tcell_so$SubClustoCell, bcscm_tcell_so$timepoint)
+
+```
+
+Checking the markers of clusters and subclusters
+
+```{r}
+
+# Major Clusters
+sapply(names(bcscm_tcell_ClustoCell$markers$major_clusters$cluster_specific$positive_markers), 
+       function(i) { 
+         tmp_markers <- bcscm_tcell_ClustoCell$markers$major_clusters$cluster_specific$positive_markers[[i]] %>% 
+           dplyr::slice(1:30) %>% dplyr::pull(Feature)
+         cat(paste0(i, ": "))
+          cat(paste0(tmp_markers, collapse = ", "))
+          cat("\n\n")
+          }
+       )
+
+# Sub-clusters
+sapply(names(bcscm_tcell_ClustoCell$markers$sub_clusters), 
+       function(i) { 
+         cat(paste0(i, ": "))
+         cat("\n")
+
+         sapply(names(bcscm_tcell_ClustoCell$markers$sub_clusters[[i]]$positive_markers), function(j) {
+           tmp_markers <- (bcscm_tcell_ClustoCell$markers$sub_clusters[[i]]$positive_markers)[[j]] %>% 
+             dplyr::slice(1:30) %>% dplyr::pull(Feature)
+           cat(paste0(j, ": "))
+           cat(paste0(tmp_markers, collapse = ", "))
+           cat("\n\n")
+           })
+         cat("\n\n\n")
+         }
+       )
+
+```
+
+## Data exploration and clustering
+
+```{r}
+# Subsetting pre-treatment cells with known expansion labels
+bcscm_tcell_pre <- subset(bcscm_tcell_so, subset = timepoint == "Pre" & expansion %in% c("E","NE"))
+
+library(pROC)
+library(glmnet)
+library(caret)
+library(pheatmap)
+
+```
+
+#### UMAP
+
+```{r}
+
+bcscm_tcell_umap <- CellDimPlot(bcscm_tcell_so, reduction = "umap", group_by = "SubClustoCell", 
+                                  label = F, pt_size = 1.01, 
+                                  theme = "theme_blank", xlab = "", ylab = "", raster = T,
+                                  legend.position = "right", legend.direction = "vertical", palette = "igv") +
+  # Add coord_fixed to remove internal axis padding (no expansion around UMAP points)
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # NEW: Remove outer white space around entire plot (top, right, bottom, left)
+    plot.margin = margin(t = 0, r = 0, b = 5, l = -50),
+    plot.subtitle = element_text(size = 7, hjust = 0.05),
+    legend.margin = margin(t = 0, r = 0, b = 5, l = -5),      # Internal legend padding
+    legend.box.margin = margin(0, 0, 0, 5),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 4.5),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt")
+  ) +
+  labs(subtitle = "T/NK Data SubClustoCells", 
+       color = NULL, x = NULL, y = NULL, tag = "a") +
+  guides(color = guide_legend(ncol = 2, bycol = T, override.aes = list(size = 2)))
+
+```
+
+#### Confusion Matrix
+
+```{r}
+
+# With Celltypes
+
+bcscm_tcell_SubClustoCell_vs_manual_annot <- table(SubClustoCell = bcscm_tcell_pre$SubClustoCell,
+                                                   manual_annot = bcscm_tcell_pre$cellSubType)
+
+bcscm_tcell_SubClustoCell_vs_manual_annot <- prop.table(bcscm_tcell_SubClustoCell_vs_manual_annot, margin = 1)
+
+bcscm_tcell_SubClustoCell_vs_manual_annot <- as.data.frame(bcscm_tcell_SubClustoCell_vs_manual_annot)
+colnames(bcscm_tcell_SubClustoCell_vs_manual_annot) <- c("SubClustoCell", "Manual Annotations", "Fraction")
+
+
+# ---- add colored y-axis tiles
+bcscm_SubClustoCell_cat_df <- bcscm_tcell_SubClustoCell_vs_manual_annot |>
+  distinct(`SubClustoCell`) |>
+  mutate(`SubClustoCell` = factor(levels(`SubClustoCell`), 
+                                       levels = levels(`SubClustoCell`))) %>% 
+  mutate(color = ggsci::pal_igv()(20))
+
+bcscm_tcell_SubClustoCell_vs_manual_annot_plt <- ggplot(bcscm_tcell_SubClustoCell_vs_manual_annot, 
+                                                     aes(x = `Manual Annotations`, 
+                                                         y = `SubClustoCell`,  color = Fraction)) +
+  geom_point(size = bcscm_tcell_SubClustoCell_vs_manual_annot$Fraction) +
+  # geom_text(aes(label = Count)) +
+  scale_color_gradient(
+    low = "white", 
+    high = muted("#DC0000FF"),
+    labels = label_number(scale_cut = cut_short_scale(), accuracy = 0.1)
+  ) +
+  
+  ggnewscale::new_scale_fill() +                             # <- start fresh
+
+  geom_tile(
+  data = bcscm_SubClustoCell_cat_df,
+  aes(y = `SubClustoCell`, x = -0.5, fill = color),
+  inherit.aes = FALSE,
+  height = 0.75
+) +
+  scale_fill_identity(guide = "none") +                    # use literal colors for strip
+  scale_y_discrete(expand = expansion(add = 0.6)) +  # leave space at bottom
+  coord_cartesian(clip = "off")  +      # prevent clipping of strip
+  theme_minimal() +
+  labs(title = NULL, tag = "b", subtitle = "Pre-treatment"
+       ) + 
+  styled_theme(legend_position = "right", style = "classic", title_align = "left", border_mode = "all", legends_to_drop = "size") +
+  theme(plot.margin = margin(b = -50),
+        text = element_text(size = 7), 
+        # axis.title.y = element_blank(), 
+        axis.text.y = element_text(size = 5), 
+        axis.ticks.y = element_blank(),
+        legend.position = "top", 
+        legend.direction = "horizontal",
+        legend.margin = margin(2, 2, 2, 2),      # Internal legend padding
+        legend.box.margin = margin(t = 0, r = 0, b = 2, l = 0),  # External space to plot
+        legend.box.spacing = unit(1, "pt"),
+        title = element_text(size = 7),
+        axis.title = element_text(size = 7),
+        plot.tag = element_text(size = 7, face = "bold"),
+        legend.title = element_text(size = 5.5, margin = margin(b = 2)),
+        legend.key.width = unit(0.25, "cm"),
+        legend.key.height = unit(0.5, "cm"),
+        panel.grid.major.y = element_line(color = "grey", size = 0.3)) +
+  guides(color = guide_colorbar(barheight = unit(0.2, "cm"), 
+                                barwidth = unit(1.5, "cm")))
+
+#____________________________________
+
+# With expansion
+
+bcscm_tcell_SubClustoCell_vs_expansion <- table(SubClustoCell = bcscm_tcell_pre$SubClustoCell[bcscm_tcell_pre$expansion != "n/a"],
+                                                   expansion = bcscm_tcell_pre$expansion[bcscm_tcell_pre$expansion != "n/a"])
+
+bcscm_tcell_SubClustoCell_vs_expansion <- as.data.frame(bcscm_tcell_SubClustoCell_vs_expansion)
+colnames(bcscm_tcell_SubClustoCell_vs_expansion) <- c("SubClustoCell", "Expansion", "Count")
+
+bcscm_tcell_SubClustoCell_vs_expansion_plt <- ggplot(bcscm_tcell_SubClustoCell_vs_expansion, 
+                                                        aes(x = `Expansion`, 
+                                                            y = `SubClustoCell`,  color = Count)) +
+  geom_point(size = log10(bcscm_tcell_SubClustoCell_vs_expansion$Count)/3) +
+  # geom_text(aes(label = Count)) +
+  scale_color_gradient(
+    low = "white", 
+    high = muted("#DC0000FF"),
+    labels = label_number(scale_cut = cut_short_scale(), accuracy = 1)
+  ) +
+    ggnewscale::new_scale_fill() +                             # <- start fresh
+
+  geom_tile(
+  data = bcscm_SubClustoCell_cat_df,
+  aes(y = `SubClustoCell`, x = -0.5, fill = color),
+  inherit.aes = FALSE,
+  height = 0.75
+) +
+  scale_fill_identity(guide = "none") +                    # use literal colors for strip
+  scale_y_discrete(expand = expansion(add = 0.6)) +  # leave space at bottom
+  coord_cartesian(clip = "off")  +      # prevent clipping of strip
+  theme_minimal() +
+  labs(title = NULL, tag = "c", subtitle = "Pre-treatment"
+  ) + 
+  styled_theme(legend_position = "right", style = "classic", title_align = "left", border_mode = "all", legends_to_drop = "size") +
+  theme(plot.margin = margin(b = -50),
+        text = element_text(size = 7),
+        axis.title.y = element_blank(), axis.text.y = element_text(size = 5), 
+        # axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+        legend.margin = margin(2, 2, 2, 2),      # Internal legend padding
+        legend.box.margin = margin(t = 0, r = 0, b = 0, l = 5),  # External space to plot
+        legend.box.spacing = unit(1, "pt"),
+        legend.position = "top", 
+        legend.direction = "horizontal",
+        title = element_text(size = 7),
+        axis.title = element_text(size = 7),
+        plot.tag = element_text(size = 7, face = "bold"),
+        legend.title = element_text(size = 5.5, margin = margin(b = 2)),
+        legend.key.width = unit(0.25, "cm"),
+        legend.key.height = unit(0.5, "cm")) +
+  guides(color = guide_colorbar(barheight = unit(0.2, "cm"), 
+                                barwidth = unit(1.5, "cm")))
+
+
+```
+
+## First row figure
+
+```{r}
+
+# Combine plots
+
+bcscm_first_row <- (
+    bcscm_tcell_umap + 
+    # patchwork::plot_spacer() +
+    ((bcscm_tcell_SubClustoCell_vs_manual_annot_plt +
+    bcscm_tcell_SubClustoCell_vs_expansion_plt) + plot_layout(widths = c(17, 3), heights = 1, guides = "keep", axes = "collect_y"))
+) + plot_layout(widths = c(10, 23), heights = 1, guides = "keep") & theme(plot.margin = margin(t = 0, r = 4, b = 2, l = 2.9))
+
+
+ggsave(filename = "../../../Testing results/bcscm/Final/bcscm_first_row.png", 
+       plot = bcscm_first_row, device = "png", width = 6.85, height = (1.762)*1.6, units = "in", dpi = 300)
+
+ggsave(filename = "../../../Testing results/bcscm/Final/bcscm_first_row.pdf", 
+       plot = bcscm_first_row, device = "pdf", width = 6.85, height = (1.762)*1.6, units = "in", dpi = 300)
+
+
+```
+
+## Predictive cellSubTypes (based on the paper)
+
+```{r}
+
+patient_summary_CD8_CD4_EX_pre_manual <- bcscm_tcell_pre@meta.data %>%
+  dplyr::filter(expansion %in% c("E","NE")) %>%
+  group_by(patient_id) %>%
+  summarise(
+    expansion_status = unique(expansion),
+    BC_type = unique(BC_type),
+    n_cells = n(),
+    frac_CD8_EX = mean(cellSubType == "CD8_EX"),
+    frac_CD8_EX_Prolif = mean(cellSubType == "CD8_EX_Prolif"),
+    frac_CD8_EX_Prolif = mean(cellSubType == "CD8_EX_Prolif"),
+    frac_CD4_EX = mean(cellSubType == "CD4_EX"),
+    frac_CD4_EX_Prolif = mean(cellSubType == "CD4_EX_Prolif"),
+  ) %>%
+  mutate(expansion_binary = ifelse(expansion_status == "E", 1, 0))
+
+#  Box plot of (E vs NE)
+patient_summary_CD8_CD4_EX_pre_manual_long <- patient_summary_CD8_CD4_EX_pre_manual %>%
+  pivot_longer(starts_with("frac_"), names_to = "cellSubType", values_to = "fraction")
+
+patient_summary_CD8_CD4_EX_pre_manual_long$cellSubType <- gsub("frac_", "", patient_summary_CD8_CD4_EX_pre_manual_long$cellSubType)
+
+patient_summary_CD8_CD4_EX_pre_manual_long$cellSubType <- recode(patient_summary_CD8_CD4_EX_pre_manual_long$cellSubType,
+  "CD8_EX" = "CD8-EX",
+  "CD8_EX_Prolif" = "CD8-EX-Prolif",
+  "CD4_EX" = "CD4-EX",
+  "CD4_EX_Prolif" = "CD4-EX-Prolif"
+)
+
+patient_summary_CD8_CD4_EX_pre_boxplt <- make_facet_boxplot_with_stats(df = patient_summary_CD8_CD4_EX_pre_manual_long, 
+                                                                  x = "expansion_status",
+                                                                  y = "fraction",
+                                                                  fill = "expansion_status", 
+                                                                  palette = c("NE" = "gray80", "E" = "#E49E26"),
+                                                                  facet.by = "cellSubType", facet.nrow = 2,
+                                                                  subtitle = NULL, 
+                                                                  ylab = "Per−patient cell fraction",
+                                                                  tag = "d")
+
+#______________________
+
+# Elastic-net modelling
+X_CD8_CD4_EX <- as.matrix(patient_summary_CD8_CD4_EX_pre_manual %>%
+                       dplyr::mutate("log10_n_cells" = log10(n_cells)) %>% 
+                       dplyr::select(starts_with("frac_"), log10_n_cells))
+
+y_CD8_CD4_EX <- patient_summary_CD8_CD4_EX_pre_manual$expansion_binary
+
+set.seed(1234)
+cvfit_CD8_CD4_EX <- cv.glmnet(X_CD8_CD4_EX, y_CD8_CD4_EX, family = "binomial", alpha = 0.5, nfolds = 5)
+plot(cvfit_CD8_CD4_EX)  # Supplementary Figure (if asked for)
+coef(cvfit_CD8_CD4_EX, s = "lambda.min")
+
+#_______________________
+
+# Coefficient visualization
+coefs_CD8_CD4_EX <- as.matrix(coef(cvfit_CD8_CD4_EX, s = "lambda.min"))[-1, , drop = FALSE]  # drop intercept
+coefs_CD8_CD4_EX_df <- data.frame(
+  term = rownames(coefs_CD8_CD4_EX),
+  estimate = as.numeric(coefs_CD8_CD4_EX[,1])
+)
+
+coefs_CD8_CD4_EX_df$term <- recode(coefs_CD8_CD4_EX_df$term,
+  "frac_CD8_EX" = "CD8-EX",
+  "frac_CD8_EX_Prolif" = "CD8-EX-Prolif",
+  "frac_CD4_EX" = "CD4-EX",
+  "frac_CD4_EX_Prolif" = "CD4-EX-Prolif",
+  "log10_n_cells" = "log10(total T cells)"
+)
+
+patient_summary_CD8_CD4_EX_pre_pred_direction_plt <- 
+  ggplot(coefs_CD8_CD4_EX_df, aes(x = reorder(term, estimate), y = estimate, fill = estimate > 0)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "#1E88E5", "FALSE" = "gray60")) +
+  theme_minimal(base_size = 6) +
+  labs(x = NULL, y = "Coefficient (elastic-net, λmin)", tag = "e",
+       title = "Predictive Directions") +
+      theme(
+    plot.subtitle = element_text(size = 7),
+    plot.title = element_text(size = 7),
+    legend.title = element_blank(),
+    text = element_text(size = 6),
+    axis.title.x = element_text(size = 7),
+    strip.text = element_text(size = 5.5),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8), line = element_line(linewidth = 0.1), 
+    # NEW: Remove outer white space around entire plot (top, right, bottom, left)
+    plot.margin = margin(0, 5, 0, 5),
+    legend.margin = margin(0, 0, 0, 0),      # Internal legend padding
+    legend.box.margin = margin(0, 0, 0, 0),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.2, "cm"),
+    legend.text = element_text(size = 5), 
+    legend.position = "top", legend.direction = "horizontal", 
+    legend.key.width = unit(6, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt")
+  )
+
+#_______________________
+
+# ROC analysis and ROC plot
+pred_prob_CD8_CD4_EX <- predict(cvfit_CD8_CD4_EX, newx = X_CD8_CD4_EX, s = "lambda.min", type = "response")[,1]
+roc_obj_CD8_CD4_EX <- roc(y_CD8_CD4_EX, pred_prob_CD8_CD4_EX)
+auc_val_CD8_CD4_EX <- auc(roc_obj_CD8_CD4_EX)
+cat("AUC =", auc_val_CD8_CD4_EX, "\n")
+
+patient_summary_CD8_CD4_EX_pre_manual_roc_plt <- ggroc(roc_obj_CD8_CD4_EX, color = "#E64B35", size = 0.5) +
+  theme_classic(base_size = 6) +
+  annotate("text", x = 0.6, y = 0.1, label = paste0("AUROC = ", round(auc_val_CD8_CD4_EX, 2))) +
+  labs(subtitle = "Elastic−net Model: Predictive Accuracy", x = "Specificity", 
+       y = "Sensitivity", tag = "f") +
+  theme(
+    plot.subtitle = element_text(size = 7),
+    plot.title = element_text(size = 7),
+    legend.title = element_blank(),
+    text = element_text(size = 6),
+    strip.text = element_text(size = 5.5),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8), line = element_line(linewidth = 0.1), 
+    axis.title = element_text(size = 7),
+    # NEW: Remove outer white space around entire plot (top, right, bottom, left)
+    plot.margin = margin(0, 5, 0, 5),
+    legend.margin = margin(0, 0, 0, 0),      # Internal legend padding
+    legend.box.margin = margin(0, 0, 0, 0),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.2, "cm"),
+    legend.text = element_text(size = 5), 
+    legend.position = "top", legend.direction = "horizontal", 
+    legend.key.width = unit(6, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt")
+  )
+
+```
+
+## Second row figure
+
+```{r}
+
+# Combine plots
+
+bcscm_paperTypes_second_row <- (
+    (wrap_elements(patient_summary_CD8_CD4_EX_pre_boxplt) +
+       wrap_elements(patient_summary_CD8_CD4_EX_pre_pred_direction_plt) +
+       wrap_elements(patient_summary_CD8_CD4_EX_pre_manual_roc_plt) +
+       plot_layout(ncol = 3, widths = c(3, 3, 3))
+    )
+) + 
+  plot_layout(heights = 1, guides = "keep")
+
+
+ggsave(filename = "../../../Testing results/bcscm/Final/bcscm_paperTypes_second_row.png", 
+       plot = bcscm_paperTypes_second_row, device = "png", width = 6.85, height = (1.762)*1, units = "in", dpi = 300)
+
+ggsave(filename = "../../../Testing results/bcscm/Final/bcscm_paperTypes_second_row.pdf", 
+       plot = bcscm_paperTypes_second_row, device = "pdf", width = 6.85, height = (1.762)*1, units = "in", dpi = 300)
+
+
+```
+
+## Evaluating the top sub-clusters
+
+```{r}
+
+library(pROC)
+library(glmnet)
+
+subClust_Exp_Type_df <- bcscm_tcell_pre@meta.data[, c("SubClustoCell", "expansion", "cellSubType")] %>% 
+  mutate(expansion = ifelse(expansion == "E", 1, 0))
+
+subClust_Exp_Type_df$SubClustoCell <- as.character(subClust_Exp_Type_df$SubClustoCell)
+
+expansion_enriched_subs <- 
+  subClust_Exp_Type_df %>%
+  group_by(SubClustoCell) %>%
+  summarise(
+    n = n(),
+    prop = mean(expansion)
+  ) %>% 
+  dplyr::filter(prop > mean(subClust_Exp_Type_df$expansion)) %>% 
+  dplyr::pull(SubClustoCell) %>% as.character()
+
+subClust_Exp_Type_df <- subClust_Exp_Type_df %>% dplyr::filter(SubClustoCell %in% expansion_enriched_subs)
+
+#_________________
+
+# Fisher exact test
+
+SubClustoCells <- unique(subClust_Exp_Type_df$SubClustoCell)
+
+set.seed(1234)
+top_SubClustoCells <- lapply(SubClustoCells, function(c){
+  sub_df <- data.frame(
+    x = factor(subClust_Exp_Type_df$SubClustoCell == c, levels = c(TRUE, FALSE)),
+    y = subClust_Exp_Type_df$expansion
+  )
+  test <- fisher.test(table(sub_df))
+  data.frame(
+    SubClustoCell = c,
+    p_value = test$p.value,
+    odds_ratio = test$estimate
+  )
+})
+
+top_SubClustoCells <- do.call(rbind, top_SubClustoCells) %>% 
+  dplyr::slice_min(p_value, n = 4)
+
+```
+
+### Evaluating the response-ready circuit
+
+Evaluating the C4-Sub4, C5-Sub2, C5-Sub3, C2-Sub1 (top_SubClustoCells) among T/NK cells, identified through exploration of the table of clusters and cell types/states and their confusions.
+
+- C5-Sub2 (terminally exhausted CD8 effectors with high inhibitory signaling),
+- C5-Sub3 (interferon-licensed CD8 exhausted/effector progenitors),
+- C4-Sub4 (CXCL13+ CD4 TFH/TEX-like checkpoint-rich effectors),
+- C2-Sub1 (CD4 effector-memory state with GZMK/GZMA cytotoxicity and CXCL13-linked migratory potential),
+
+##### Predictive Validity
+
+```{r}
+
+library(pROC)
+library(glmnet)
+library(caret)
+library(pheatmap)
+
+# Define predictive subclusters (from your discovery)
+bcscm_tcell_predictive_subs <- c("C4-Sub4", "C5-Sub2", "C5-Sub3", "C2-Sub1")
+
+# Computing patient level fractions
+patient_summary_tcell_pre <- bcscm_tcell_pre@meta.data %>%
+  dplyr::filter(expansion %in% c("E","NE")) %>%
+  mutate(is_predictive = SubClustoCell %in% bcscm_tcell_predictive_subs) %>%
+  group_by(patient_id) %>%
+  summarise(
+    expansion_status = unique(expansion),
+    BC_type = unique(BC_type),
+    n_cells = n(),
+    frac_C4Sub4 = mean(SubClustoCell == "C4-Sub4"),
+    frac_C5Sub2 = mean(SubClustoCell == "C5-Sub2"),
+    frac_C5Sub3 = mean(SubClustoCell == "C5-Sub3"),
+    frac_C2Sub1 = mean(SubClustoCell == "C2-Sub1")
+  ) %>%
+  mutate(expansion_binary = ifelse(expansion_status == "E", 1, 0))
+
+#  Box plot of (E vs NE)
+patient_summary_tcell_pre_long <- patient_summary_tcell_pre %>%
+  pivot_longer(starts_with("frac_"), names_to = "subcluster", values_to = "fraction")
+
+patient_summary_tcell_pre_long$subcluster <- recode(patient_summary_tcell_pre_long$subcluster,
+  "frac_C4Sub4" = "C4-Sub4",
+  "frac_C5Sub2" = "C5-Sub2",
+  "frac_C5Sub3" = "C5-Sub3",
+  "frac_C2Sub1" = "C2-Sub1",
+  "log10_n_cells" = "log10(total T cells)"
+)
+
+
+patient_summary_tcell_pre_boxplt <- make_facet_boxplot_with_stats(df = patient_summary_tcell_pre_long, 
+                                                                  x = "expansion_status",
+                                                                  y = "fraction",
+                                                                  fill = "expansion_status", 
+                                                                  palette = c("NE" = "gray80", "E" = "#D81B60"),
+                                                                  facet.by = "subcluster",
+                                                                  subtitle = "Pre-treatment Frequencies of\nPredictive ClustoCell Subclusters", 
+                                                                  ylab = "Per−patient cell fraction",
+                                                                  tag = "g")
+
+#_______________________
+
+# Heatmap of gene signatures
+
+# Defining your signatures
+sig_panels_bcscm_tcell <- list(
+  `C4-Sub4` = c("PDCD1", "LAG3", "CTLA4", "TIGIT", "CXCL13", "TNFRSF18", "CTSD", "PRDM1"),
+  `C5-Sub2` = c("CD8A", "GZMB", "LAG3", "TIGIT", "CXCL13", "PRF1", "GZMH", "NKG7", "HLA-DRA", "HLA-DRB1", "HLA-DRB5"),
+  `C5-Sub3` = c("CD8A", "GZMB", "LAG3", "CXCL13", "GNLY", "PRF1", "GZMH", "NKG7", "CCL4", "HLA-DRA", "HLA-DRB1", "HLA-DRB5"),
+  `C2-Sub1` = c("GZMK", "KLRB1", "CXCL13", "ANXA1", "MTRNR2L8")
+)
+
+# Computing average expression per SubClustoCell
+sig_panels_bcscm_tcell_avg_expr <- AverageExpression(
+  bcscm_tcell_pre,
+  group.by = "SubClustoCell",
+  features = unlist(sig_panels_bcscm_tcell) %>% unique()
+)$RNA
+
+# Subsetting only predictive subclusters
+predictive_subs <- c("C4-Sub4", "C5-Sub2", "C5-Sub3", "C2-Sub1")
+sig_panels_bcscm_tcell_avg_expr <- sig_panels_bcscm_tcell_avg_expr[, colnames(sig_panels_bcscm_tcell_avg_expr) %in% predictive_subs]
+
+# Create combined gene × signature labels to ensure uniqueness
+sig_panels_bcscm_tcell_gene_order <- unlist(sig_panels_bcscm_tcell)
+sig_panels_bcscm_tcell_group_labels <- rep(names(sig_panels_bcscm_tcell), lengths(sig_panels_bcscm_tcell))
+
+# scale per gene (row)
+sig_panels_bcscm_tcell_sig_scaled <- t(scale(t(sig_panels_bcscm_tcell_avg_expr[sig_panels_bcscm_tcell_gene_order, predictive_subs])))
+
+# Make a data frame that keeps both
+sig_panels_bcscm_tcell_ann_row <- data.frame(
+  Gene = sig_panels_bcscm_tcell_gene_order,
+  Signature = sig_panels_bcscm_tcell_group_labels
+)
+
+# Create unique rownames like "CXCL13 (C4-Sub4)" if duplicates exist
+sig_panels_bcscm_tcell_ann_row <- sig_panels_bcscm_tcell_ann_row %>% 
+  dplyr::distinct(Gene, .keep_all = T)
+
+rownames(sig_panels_bcscm_tcell_ann_row) <- sig_panels_bcscm_tcell_ann_row$Gene
+
+# Remove duplicates from sig_panels_bcscm_tcell_sig_scaled as well
+sig_panels_bcscm_tcell_sig_scaled <- sig_panels_bcscm_tcell_sig_scaled[rownames(sig_panels_bcscm_tcell_ann_row),]
+
+# shortenning label text for display
+sig_panels_bcscm_tcell_ann_row$Signature <- factor(
+  sig_panels_bcscm_tcell_ann_row$Signature,
+  levels = names(sig_panels_bcscm_tcell)
+)
+
+library(ggalign)
+
+# Correcting the orders as desired
+sig_panels_bcscm_tcell_sig_scaled <- sig_panels_bcscm_tcell_sig_scaled[c(1,3,5,6,8,7,4,2,9:18, 21, 20, 22, 19),]
+
+sig_panels_bcscm_tcell_ggheatmap <- 
+  ggheatmap(sig_panels_bcscm_tcell_sig_scaled,
+            # width = unit(6, "cm"), height = unit(10, "cm")
+  ) +
+  scale_fill_gradient2(
+    low = "navy", mid = "white", high = "firebrick3", midpoint = 0,
+    name = "Scaled\nExpr."
+  ) +
+  labs(subtitle = NULL, tag = "h") +
+    theme(plot.margin = margin(t = 0, r = 0, b = 0, l = 0),
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(angle = 18, vjust = 0.7, face = "plain", color = "black"),
+        axis.text = element_text(size = 6),
+        text = element_text(size = 7),
+        title = element_text(size = 7),
+        plot.title = element_text(size = 7),
+        plot.subtitle = element_text(size = 7, vjust = 0),
+        axis.title = element_text(size = 7),
+        plot.tag = element_text(size = 7, face = "bold"),
+        legend.title = element_text(size = 6),
+        legend.margin = margin(t = 0, r = 0, b = 0, l = 0),      # Internal legend padding
+        legend.box.margin = margin(0, 0, 0, 0),  # External space to plot
+        legend.box.spacing = unit(0, "pt"),
+        legend.key.width = unit(0.25, "cm"),
+        legend.key.height = unit(0.4, "cm"))
+
+#______________________
+
+# Elastic-net modelling
+X <- as.matrix(patient_summary_tcell_pre %>%
+                  dplyr::mutate("log10_n_cells" = log10(n_cells)) %>% 
+                  dplyr::select(starts_with("frac_"), log10_n_cells))
+
+y <- patient_summary_tcell_pre$expansion_binary
+
+cvfit <- cv.glmnet(X, y, family = "binomial", alpha = 0.5, nfolds = 5)
+plot(cvfit)  # Supplementary Figure (if asked for)
+coef(cvfit, s = "lambda.min")
+
+#_______________________
+
+# Coefficient visualization
+coefs <- as.matrix(coef(cvfit, s = "lambda.min"))[-1, , drop = FALSE]  # drop intercept
+coef_df <- data.frame(
+  term = rownames(coefs),
+  estimate = as.numeric(coefs[,1])
+)
+
+coef_df$term <- recode(coef_df$term,
+  "frac_C4Sub4" = "C4-Sub4",
+  "frac_C5Sub2" = "C5-Sub2",
+  "frac_C5Sub3" = "C5-Sub3",
+  "frac_C2Sub1" = "C2-Sub1",
+  "log10_n_cells" = "log10(total T cells)"
+)
+
+patient_summary_tcell_pre_focus_pred_direction_plt <- 
+  ggplot(coef_df, aes(x = reorder(term, estimate), y = estimate, fill = estimate > 0)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "#1E88E5", "FALSE" = "gray60")) +
+  theme_minimal(base_size = 6) +
+  labs(x = NULL, y = "Coefficient (elastic-net, λmin)", tag = "i",
+       title = "Predictive Directions") +
+      theme(
+    plot.subtitle = element_text(size = 7),
+    plot.title = element_text(size = 7),
+    legend.title = element_blank(),
+    text = element_text(size = 6),
+    axis.title.x = element_text(size = 7),
+    strip.text = element_text(size = 5.5),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8), line = element_line(linewidth = 0.1), 
+    # NEW: Remove outer white space around entire plot (top, right, bottom, left)
+    plot.margin = margin(0, 5, 0, 5),
+    legend.margin = margin(0, 0, 0, 0),      # Internal legend padding
+    legend.box.margin = margin(0, 0, 0, 0),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.2, "cm"),
+    legend.text = element_text(size = 5), 
+    legend.position = "top", legend.direction = "horizontal", 
+    legend.key.width = unit(6, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt")
+  )
+
+#_______________________
+
+# ROC analysis and ROC plot
+pred_prob <- predict(cvfit, newx = X, s = "lambda.min", type = "response")[,1]
+roc_obj <- roc(y, pred_prob)
+auc_val <- auc(roc_obj)
+cat("AUC =", auc_val, "\n")
+
+patient_summary_tcell_pre_roc_plt <- ggroc(roc_obj, color = "#E64B35", size = 0.5) +
+  theme_classic(base_size = 6) +
+  annotate("text", x = 0.6, y = 0.1, label = paste0("AUROC = ", round(auc_val, 2))) +
+  labs(subtitle = "Elastic-net Model: Predictive Accuracy", x = "Specificity", 
+       y = "Sensitivity", tag = "j") +
+      theme(
+    plot.subtitle = element_text(size = 7),
+    plot.title = element_text(size = 7),
+    legend.title = element_blank(),
+    text = element_text(size = 6),
+    strip.text = element_text(size = 5.5),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8), line = element_line(linewidth = 0.1), 
+    axis.title = element_text(size = 7),
+    # NEW: Remove outer white space around entire plot (top, right, bottom, left)
+    plot.margin = margin(0, 5, 0, 5),
+    legend.margin = margin(0, 0, 0, 0),      # Internal legend padding
+    legend.box.margin = margin(0, 0, 0, 0),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.2, "cm"),
+    legend.text = element_text(size = 5), 
+    legend.position = "top", legend.direction = "horizontal", 
+    legend.key.width = unit(6, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt")
+  )
+
+
+```
+
+## Third row figure
+
+```{r}
+
+# Combine plots
+
+bcscm_third_row <- (
+wrap_elements(patient_summary_tcell_pre_boxplt) + 
+  wrap_elements(ggalign::ggalignGrob(sig_panels_bcscm_tcell_ggheatmap)) +
+  ((wrap_elements(patient_summary_tcell_pre_focus_pred_direction_plt) / patchwork::plot_spacer() / wrap_elements(patient_summary_tcell_pre_roc_plt)) +
+     plot_layout(heights = c(13, 2, 14), widths = 1, guides = "keep") & theme(plot.margin = margin(0, 0, 0, 0)))
+) + 
+  plot_layout(widths = c(12, 12, 12), heights = 1, guides = "keep")
+
+
+ggsave(filename = "../../../Testing results/bcscm/Final/bcscm_third_row.png", 
+       plot = bcscm_third_row, device = "png", width = 6.85, height = (1.762)*1.4, units = "in", dpi = 300)
+
+ggsave(filename = "../../../Testing results/bcscm/Final/bcscm_third_row.pdf", 
+       plot = bcscm_third_row, device = "pdf", width = 6.85, height = (1.762)*1.4, units = "in", dpi = 300)
+
+
+```
+
+#### CD4_EM C2-Sub1
+
+##### Predictive Validity
+
+```{r}
+
+patient_summary_CD4_EM_pre_manual <- bcscm_tcell_pre@meta.data %>%
+  dplyr::filter(expansion %in% c("E","NE")) %>%
+  group_by(patient_id) %>%
+  summarise(
+    expansion_status = unique(expansion),
+    BC_type = unique(BC_type),
+    n_cells = n(),
+    frac_CD4_EM = mean(cellSubType == "CD4_EM")
+  ) %>%
+  mutate(expansion_binary = ifelse(expansion_status == "E", 1, 0))
+
+#  Box plot of (E vs NE)
+patient_summary_CD4_EM_pre_manual_long <- patient_summary_CD4_EM_pre_manual %>%
+  pivot_longer(starts_with("frac_"), names_to = "cellSubType", values_to = "fraction")
+
+patient_summary_CD4_EM_pre_manual_long$cellSubType <- gsub("frac_", "", patient_summary_CD4_EM_pre_manual_long$cellSubType)
+
+
+patient_summary_CD4_EM_pre_boxplt <- make_facet_boxplot_with_stats(df = patient_summary_CD4_EM_pre_manual_long, 
+                                                                  x = "expansion_status",
+                                                                  y = "fraction",
+                                                                  fill = "expansion_status", 
+                                                                  palette = c("NE" = "gray80", "E" = "#E49E26"),
+                                                                  facet.by = "cellSubType",
+                                                                  subtitle = NULL, 
+                                                                  ylab = "Per−patient cell fraction",
+                                                                  tag = "k")
+
+#__________________________________
+
+# Computing patient level fractions
+patient_summary_CD4_EM_C2Sub1_pre <- bcscm_tcell_pre@meta.data %>%
+  dplyr::filter(expansion %in% c("E","NE"), cellSubType == "CD4_EM") %>%
+  group_by(patient_id) %>%
+  summarise(
+    expansion_status = unique(expansion),
+    BC_type = unique(BC_type),
+    n_cells = n(),
+    frac_C2Sub1 = mean(SubClustoCell == "C2-Sub1"),
+  ) %>%
+  mutate(expansion_binary = ifelse(expansion_status == "E", 1, 0))
+
+#  Box plot of (E vs NE)
+patient_summary_CD4_EM_C2Sub1_pre_long  <- patient_summary_CD4_EM_C2Sub1_pre %>%
+  pivot_longer(starts_with("frac_"), names_to = "subcluster", values_to = "fraction")
+
+patient_summary_CD4_EM_C2Sub1_pre_long$subcluster <- recode(patient_summary_CD4_EM_C2Sub1_pre_long$subcluster,
+                                                           "frac_C2Sub1" = "C2-Sub1 CD4 EM"
+)
+
+patient_summary_CD4_EM_C2Sub1_pre_boxplt <- make_facet_boxplot_with_stats(df = patient_summary_CD4_EM_C2Sub1_pre_long, 
+                                                                         x = "expansion_status",
+                                                                         y = "fraction",
+                                                                         fill = "expansion_status", 
+                                                                         palette = c("NE" = "gray80", "E" = "#D81B60"),
+                                                                         facet.by = "subcluster",
+                                                                         subtitle = NULL, 
+                                                                         ylab = "Per−patient cell fraction",
+                                                                         tag = NULL)
+
+#______________________
+
+# Elastic-net modelling
+
+patient_summary_CD4_EM_combined_C2Sub1_pre <- bcscm_tcell_pre@meta.data %>%
+  dplyr::filter(expansion %in% c("E","NE")) %>%
+  group_by(patient_id) %>%
+  summarise(
+    expansion_status = unique(expansion),
+    BC_type = unique(BC_type),
+    n_cells = n(),
+    frac_CD8_EX = mean(cellSubType == "CD8_EX"),
+    frac_CD8_EX_Prolif = mean(cellSubType == "CD8_EX_Prolif"),
+    frac_CD4_EX = mean(cellSubType == "CD4_EX"),
+    frac_CD4_EX_Prolif = mean(cellSubType == "CD4_EX_Prolif"),
+    frac_C2Sub1_CD4_EM = mean(SubClustoCell == "C2-Sub1" & cellSubType %in% c("CD4_EM"))
+  ) %>%
+  mutate(expansion_binary = ifelse(expansion_status == "E", 1, 0))
+
+X_CD4_EM_combined_C2Sub1 <- as.matrix(patient_summary_CD4_EM_combined_C2Sub1_pre %>%
+                                        dplyr::mutate("log10_n_cells" = log10(n_cells)) %>% 
+                                        dplyr::select(starts_with("frac_"), log10_n_cells))
+
+y_CD4_EM_combined_C2Sub1 <- patient_summary_CD4_EM_combined_C2Sub1_pre$expansion_binary
+
+set.seed(1234)
+cvfit_CD4_EM_combined_C2Sub1 <- cv.glmnet(X_CD4_EM_combined_C2Sub1, y_CD4_EM_combined_C2Sub1, family = "binomial", alpha = 0.5, nfolds = 5)
+plot(cvfit_CD4_EM_combined_C2Sub1)  # Supplementary Figure (if asked for)
+coef(cvfit_CD4_EM_combined_C2Sub1, s = "lambda.min")
+
+#_______________________
+
+# Coefficient visualization
+
+coefs_CD4_EM_combined_C2Sub1 <- as.matrix(coef(cvfit_CD4_EM_combined_C2Sub1, s = "lambda.min"))[-1, , drop = FALSE]  # drop intercept
+coef_df_CD4_EM_combined_C2Sub1 <- data.frame(
+  term = rownames(coefs_CD4_EM_combined_C2Sub1),
+  estimate = as.numeric(coefs_CD4_EM_combined_C2Sub1[,1])
+)
+
+
+
+coef_df_CD4_EM_combined_C2Sub1$term <- recode(coef_df_CD4_EM_combined_C2Sub1$term,
+                                              "frac_C2Sub1_CD4_EM" = "C2-Sub1_CD4_EM",
+                                              "log10_n_cells" = "log10(total T cells)"
+)
+
+coef_df_CD4_EM_combined_C2Sub1$term <- gsub("frac_", "", coef_df_CD4_EM_combined_C2Sub1$term)
+
+patient_summary_tcell_pre_focus_pred_CD4_EM_combined_C2Sub1_direction_plt <- 
+  ggplot(coef_df_CD4_EM_combined_C2Sub1, aes(x = reorder(term, estimate), y = estimate, fill = estimate > 0)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "#1E88E5", "FALSE" = "gray60")) +
+  theme_minimal(base_size = 6) +
+  labs(x = NULL, y = "Coefficient (elastic-net, λmin)", tag = NULL,
+       title = "Predictive Directions") +
+  theme(
+    plot.subtitle = element_text(size = 7),
+    plot.title = element_text(size = 7),
+    legend.title = element_blank(),
+    text = element_text(size = 6),
+    axis.title.x = element_text(size = 7),
+    strip.text = element_text(size = 5.5),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8), line = element_line(linewidth = 0.1), 
+    # NEW: Remove outer white space around entire plot (top, right, bottom, left)
+    plot.margin = margin(0, 5, 0, 5),
+    legend.margin = margin(0, 0, 0, 0),      # Internal legend padding
+    legend.box.margin = margin(0, 0, 0, 0),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.2, "cm"),
+    legend.text = element_text(size = 5), 
+    legend.position = "top", legend.direction = "horizontal", 
+    legend.key.width = unit(6, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt")
+  )
+
+#_______________________
+
+# ROC analysis and ROC plot
+set.seed(1234)
+pred_prob_CD4_EM_combined_C2Sub1 <- predict(cvfit_CD4_EM_combined_C2Sub1, newx = X_CD4_EM_combined_C2Sub1, s = "lambda.min", type = "response")[,1]
+roc_obj_CD4_EM_combined_C2Sub1 <- roc(y_CD4_EM_combined_C2Sub1, pred_prob_CD4_EM_combined_C2Sub1)
+auc_val_CD4_EM_combined_C2Sub1 <- auc(roc_obj_CD4_EM_combined_C2Sub1)
+cat("AUC =", auc_val_CD4_EM_combined_C2Sub1, "\n")
+
+patient_summary_CD4_EM_combined_C2Sub1_pre_roc_plt <- ggroc(roc_obj_CD4_EM_combined_C2Sub1, color = "#E64B35", size = 0.5) +
+  theme_classic(base_size = 6) +
+  annotate("text", x = 0.6, y = 0.1, label = paste0("AUROC = ", round(auc_val_CD4_EM_combined_C2Sub1, 2))) +
+  labs(subtitle = "Predictive Cell Subtypes +\nC2-Sub1-CD4-EM", x = "Specificity", 
+       y = "Sensitivity", tag = NULL) +
+  theme(
+    plot.subtitle = element_text(size = 7),
+    plot.title = element_text(size = 7),
+    legend.title = element_blank(),
+    text = element_text(size = 6),
+    strip.text = element_text(size = 5.5),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8), line = element_line(linewidth = 0.1), 
+    axis.title = element_text(size = 7),
+    # NEW: Remove outer white space around entire plot (top, right, bottom, left)
+    plot.margin = margin(0, 5, 0, 5),
+    legend.margin = margin(0, 0, 0, 0),      # Internal legend padding
+    legend.box.margin = margin(0, 0, 0, 0),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.2, "cm"),
+    legend.text = element_text(size = 5), 
+    legend.position = "top", legend.direction = "horizontal", 
+    legend.key.width = unit(6, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt")
+  )
+
+```
+
+#### Fourth row figure
+
+```{r}
+
+# Combine plots
+
+bcscm_conflicting_row <- (
+    wrap_plots(
+      wrap_elements(
+        wrap_plots(patient_summary_CD4_EM_pre_boxplt, 
+                   patient_summary_CD4_EM_C2Sub1_pre_boxplt, 
+                   ncol = 2, axes = "collect")),
+    
+    wrap_elements(
+        patient_summary_tcell_pre_focus_pred_CD4_EM_combined_C2Sub1_direction_plt),
+    
+        wrap_elements(
+            patient_summary_CD4_EM_combined_C2Sub1_pre_roc_plt),
+    widths = c(1.8, 1.5, 1.6), heights = 1, guides = "keep"
+    ) & theme(plot.margin = margin(0, 0, b = 3, l = 2.9))
+) + plot_layout(widths = c(50), heights = 1, guides = "keep")
+
+
+ggsave(filename = "../../../Testing results/bcscm/Final/bcscm_conflicting_row.png", 
+       plot = bcscm_conflicting_row, device = "png", width = 6.85, height = (1.762)*1, units = "in", dpi = 300)
+
+ggsave(filename = "../../../Testing results/bcscm/Final/bcscm_conflicting_row.pdf", 
+       plot = bcscm_conflicting_row, device = "pdf", width = 6.85, height = (1.762)*1, units = "in", dpi = 300)
+
+
+```
+
+# CD4-EM DE analysis
+
+```{r}
+
+# DE analysis between subsets
+
+# CD4_EM
+CD4_EM_C2Sub1_vs_C3Sub2 <- Seurat::FindMarkers(subset(bcscm_tcell_pre, subset = cellSubType == "CD4_EM"), 
+                                                group.by = "SubClustoCell", 
+                                                ident.1 = "C2-Sub1", 
+                                                ident.2 = "C3-Sub2")
+
+qs2::qs_save(object = CD4_EM_C2Sub1_vs_C3Sub2, file = "../../../Benchmarking/Test Datasets/breast cancer single-cell Map/CD4_EM_C2Sub1_vs_C3Sub2.qs2")
+
+CD4_EM_C2Sub1_vs_C3Sub2 <- qs2::qs_read("../../../Benchmarking/Test Datasets/breast cancer single-cell Map/CD4_EM_C2Sub1_vs_C3Sub2.qs2")
+
+CD4_EM_C2Sub1_vs_C3Sub2_top_ups <- CD4_EM_C2Sub1_vs_C3Sub2 %>% dplyr::filter(p_val_adj < 0.05, avg_log2FC > 0.585) %>% rownames()
+
+# GZMA and GZMK
+
+CD4_EM_C2Sub1_vs_C3Sub2_top_downs <- CD4_EM_C2Sub1_vs_C3Sub2 %>% dplyr::filter(p_val_adj < 0.05, avg_log2FC < -0.585) %>% dplyr::slice_min(order_by = avg_log2FC, n = 20) %>% rownames()
+
+# ST6GALNAC1
+
+#______________________________
+
+# Ploting the DE data
+
+CD4_EM_C2Sub1_vs_C3Sub2$Log2FC <- CD4_EM_C2Sub1_vs_C3Sub2$avg_log2FC
+CD4_EM_C2Sub1_vs_C3Sub2$padj <- CD4_EM_C2Sub1_vs_C3Sub2$p_val_adj
+
+CD4_EM_C2Sub1_vs_C3Sub2$reg <- 
+  ifelse(CD4_EM_C2Sub1_vs_C3Sub2$Log2FC > 0.5 & 
+           CD4_EM_C2Sub1_vs_C3Sub2$padj < 0.05, "Up",
+         ifelse(CD4_EM_C2Sub1_vs_C3Sub2$Log2FC < -0.5 & 
+                  CD4_EM_C2Sub1_vs_C3Sub2$padj < 0.05, "Down", "NS"))
+
+CD4_EM_C2Sub1_vs_C3Sub2$reg <- factor(CD4_EM_C2Sub1_vs_C3Sub2$reg, 
+                                                             levels=c("Down","Up","NS"))
+
+CD4_EM_C2Sub1_vs_C3Sub2$label <- ifelse(rownames(CD4_EM_C2Sub1_vs_C3Sub2) %in% c(
+  CD4_EM_C2Sub1_vs_C3Sub2 %>% dplyr::filter(padj < 0.05) %>% rownames_to_column("Feature") %>% dplyr::slice_max(order_by = Log2FC, n = 5) %>% dplyr::pull(Feature),
+  CD4_EM_C2Sub1_vs_C3Sub2 %>% dplyr::filter(padj < 0.05) %>% rownames_to_column("Feature") %>% dplyr::slice_min(order_by = Log2FC, n = 5) %>% dplyr::pull(Feature)
+), rownames(CD4_EM_C2Sub1_vs_C3Sub2), NA)
+
+#_______
+
+CD4_EM_C2Sub1_vs_C3Sub2_plt <- 
+  ggplot(CD4_EM_C2Sub1_vs_C3Sub2, 
+         aes(Log2FC, -log10(padj), color = reg)) +
+  
+  geom_point(size = 1.3, alpha = 0.9) +
+  
+  ggrepel::geom_text_repel(
+    aes(label = label),
+    min.segment.length = 0.1,
+    segment.size = 0.2,
+    segment.alpha = 0.8, 
+    colour = "black",
+    size = 2.2,              
+    max.overlaps = Inf,
+    box.padding = 0.35,
+    point.padding = 0.2,
+    seed = 42
+  ) +
+  
+  geom_vline(xintercept = c(-0.5, 0.5), linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  
+  scale_color_manual(
+    values = c("Down" = "royalblue", "Up" = "red2", "NS" = "grey80"),
+    labels = c("Down", "Up", "NS")
+  ) +
+  
+  labs(tag = "a",
+       caption = "FC cutoff = 0.5; padj cutoff = 0.05",
+       title = "CD4 EM",
+       subtitle = "C2-Sub1 vs. C3-Sub2",
+       x = "Log2FC",
+       y = "-Log10 padj",
+       color = ""
+  ) +
+  
+  theme_classic(base_size = 7) +
+  theme(
+    plot.tag = element_text(size = 7, face = "bold"),
+    plot.caption = element_blank(),
+    plot.title = element_text(size = 7, face = "bold"),
+    plot.subtitle = element_text(size = 7),
+    legend.position = "top",
+    legend.text = element_text(size = 6),
+    axis.text = element_text(size = 6),
+    axis.title = element_text(size = 7),
+    panel.grid = element_blank()
+  ) +
+  guides(color = guide_legend(override.aes = list(size = 2)))
+
+#_________________________
+
+# Plotting table of DEGs
+
+CD4_EM_C2Sub1_vs_C3Sub2_top_ups_df <-
+  data.frame(
+    Rank1_8 = paste(1:8, CD4_EM_C2Sub1_vs_C3Sub2_top_ups[1:8], sep = " : ")
+  )
+
+CD4_EM_C2Sub1_vs_C3Sub2_top_ups_plt <- ggtexttable(
+  CD4_EM_C2Sub1_vs_C3Sub2_top_ups_df,
+  rows = NULL,
+  cols = NULL,  
+  theme = custom_tbl_theme_size8
+)
+
+# Add minimal lines: only top and bottom horizontal lines, no vertical lines for cleaner look
+CD4_EM_C2Sub1_vs_C3Sub2_top_ups_plt <- CD4_EM_C2Sub1_vs_C3Sub2_top_ups_plt %>%
+  # Removed vertical lines for minimalism
+  tab_add_title(text = "Up DEGs", face = "bold", size = 6, padding = unit(1, "line")) +  # Reduced padding to eliminate top margin
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 6),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    legend.margin = margin(0, 0, 0, 0),      
+    legend.box.margin = margin(0, 0, 0, 0),  
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt"),
+    plot.margin = margin(t = -10, r = 0, b = 10, l = 0),  # remove extra vertical padding
+  ) +
+  theme_void()
+
+#___________
+
+CD4_EM_C2Sub1_vs_C3Sub2_top_downs_df <-
+  data.frame(
+    Rank1_10 = paste(1:10, CD4_EM_C2Sub1_vs_C3Sub2_top_downs[1:10], sep = " : "),
+    Rank11_20 = paste(11:20, CD4_EM_C2Sub1_vs_C3Sub2_top_downs[11:20], sep = " : ")
+  )
+
+CD4_EM_C2Sub1_vs_C3Sub2_top_downs_plt <- ggtexttable(
+  CD4_EM_C2Sub1_vs_C3Sub2_top_downs_df,
+  rows = NULL,
+  cols = NULL,  
+  theme = custom_tbl_theme
+)
+
+# Add minimal lines: only top and bottom horizontal lines, no vertical lines for cleaner look
+CD4_EM_C2Sub1_vs_C3Sub2_top_downs_plt <- CD4_EM_C2Sub1_vs_C3Sub2_top_downs_plt %>%
+  tab_add_hline(at.row = c(1), row.side = "top", linewidth = 1.5, linetype = 1) %>%  # Thinner lines for elegance
+  tab_add_hline(at.row = nrow(CD4_EM_C2Sub1_vs_C3Sub2_top_downs_df), row.side = "bottom", linewidth = 1.5, linetype = 1) %>%
+  # Removed vertical lines for minimalism
+  tab_add_title(text = "Top 20 Down DEGs", face = "bold", size = 6, padding = unit(1, "line")) +  # Reduced padding to eliminate top margin
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 6),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    legend.margin = margin(0, 0, 0, 0),      
+    legend.box.margin = margin(0, 0, 0, 0),  
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt"),
+    plot.margin = margin(t = -10, r = 0, b = 10, l = 0),  # remove extra vertical padding
+  ) +
+  theme_void()
+
+```
+
+## Survival analysis
+
+#### Up DEGs plus CD4 EM signature
+
+```{r}
+
+# BiocManager::install(c("curatedTCGAData", "MultiAssayExperiment", "TCGAutils", "GSVA"), update = FALSE, ask = FALSE)
+
+# Load libraries
+library(curatedTCGAData)
+library(survival)
+library(survminer)
+library(SummarizedExperiment)
+library(singscore)
+
+# Downloading TCGA-BRCA dataset (RNA-Seq normalized gene expression and clinical data)
+brca_mae <- curatedTCGAData(diseaseCode = "BRCA",
+                            version = "2.1.1",
+                            assays = "RNASeq2GeneNorm",
+                            dry.run = FALSE)
+
+qs2::qs_save(object = brca_mae,
+             file = "../../../Benchmarking/Test Datasets/TCGA/brca_mae.qs2")
+
+brca_mae <- qs2::qs_read("../../../Benchmarking/Test Datasets/TCGA/brca_mae.qs2")
+
+# Extract the gene expression data (SummarizedExperiment)
+exp_se <- experiments(brca_mae)[["BRCA_RNASeq2GeneNorm-20160128"]]
+colnames(exp_se) <- gsub("-01$", "", colnames(exp_se))
+
+# Extract clinical data
+clinical_data <- colData(brca_mae)
+
+# Prepare expression matrix
+expr_mat <- assay(exp_se)
+
+# Prepare gene sets list
+cd4_em_nonNK_nonCD8_signature <- c("CD4", "CD40LG", "IL7R", "ITGB1", "ANXA1")
+up_genes_plus <- intersect(c(CD4_EM_C2Sub1_vs_C3Sub2_top_ups, cd4_em_nonNK_nonCD8_signature), rownames(expr_mat)) %>% unique()
+
+down_genes <- intersect(CD4_EM_C2Sub1_vs_C3Sub2_top_downs, rownames(expr_mat)) %>% unique()
+
+length(up_genes_plus)
+length(down_genes)
+
+# Compute Singscore (combined up/down)
+# Rank genes per sample
+ranked_mat <- rankGenes(expr_mat)
+
+# Compute scores
+plus_scores <- simpleScore(
+  ranked_mat,
+  upSet = up_genes_plus,
+  downSet = down_genes,
+  centerScore = TRUE
+)
+
+# Extract combined score
+gene_set_plus_score <- plus_scores$TotalScore
+names(gene_set_plus_score) <- colnames(expr_mat)
+
+# Prepare survival data
+# In TCGA, overall survival (OS) is typically constructed from:
+# - vital_status: 0 (Alive) or 1 (Dead)
+# - days_to_last_followup: for censored (alive)
+# - days_to_death: for events (dead)
+
+# Create OS time (in days)
+os_time <- ifelse(clinical_data$vital_status == 1, 
+                  clinical_data$days_to_death, 
+                  clinical_data$days_to_last_followup)
+
+# Create OS event (1 = dead, 0 = censored)
+os_event <- ifelse(clinical_data$vital_status == 1, 1, 0)
+
+# Censoring the follow-up time to 10 years (120 months; 3600 days)
+## We censor all the patients with over 10 years survival (i.e. we set their survival/vital status to 0 up until 10 years and set their days (days_to_last_followup to 3600))
+os_time[which(clinical_data$days_to_death > 3600 | clinical_data$days_to_last_followup > 3600)] <- 3600
+os_event[which(clinical_data$days_to_death > 3600 | clinical_data$days_to_last_followup > 3600)] <- 0
+
+# Ensure sample names match between expression and clinical
+common_samples <- intersect(names(gene_set_plus_score), rownames(clinical_data))
+length(common_samples)
+
+# Subset to common samples
+gene_set_plus_score <- gene_set_plus_score[common_samples]
+os_time <- os_time[match(common_samples, rownames(clinical_data))]
+os_event <- os_event[match(common_samples, rownames(clinical_data))]
+
+# Remove NA in survival data
+valid_idx <- !is.na(os_time) & !is.na(os_event) & !is.na(gene_set_plus_score)
+os_time <- os_time[valid_idx]
+os_event <- os_event[valid_idx]
+gene_set_plus_score <- gene_set_plus_score[valid_idx]
+
+#__________________________
+
+# Converting os_time from days to months
+os_time <- os_time/30 
+
+# Create the modeling df
+cox_plus_df <- tibble(os_time,
+                 os_event,
+                 `Gene-set Score` = gene_set_plus_score,
+                 Age = clinical_data[names(gene_set_plus_score), "Age.at.Initial.Pathologic.Diagnosis"],
+                 Gender = clinical_data[names(gene_set_plus_score), "gender"],
+                 `Pathological Stage` = clinical_data[names(gene_set_plus_score), "pathologic_stage"]
+)
+
+cox_plus_df$Stage <- tolower(cox_plus_df$`Pathological Stage`)
+
+cox_plus_df <- cox_plus_df %>% 
+  dplyr::mutate(
+    Stage = dplyr::case_when(
+      grepl("i", Stage) & !grepl("ii|iii|iv", Stage) ~ "Stage I",
+      grepl("ii", Stage) & !grepl("iii|iv", Stage) ~ "Stage II",
+      grepl("iii", Stage) ~ "Stage III",
+      grepl("iv", Stage) ~ "Stage IV",
+      TRUE ~ NA_character_
+    )
+  )
+
+```
+
+##### Multi-variate Cox
+
+```{r}
+
+cox_plus_df_clean <- cox_plus_df %>%
+  dplyr::filter(
+    !is.na(os_time),
+    !is.na(os_event),
+    !is.na(`Gene-set Score`),
+    !is.na(Age),
+    !is.na(Gender),
+    !is.na(`Pathological Stage`)
+  )
+
+cox_plus_df_clean <- cox_plus_df_clean %>% dplyr::filter(!is.na(Stage))
+cox_plus_df_clean$Stage <- factor(cox_plus_df_clean$Stage)
+
+table(cox_plus_df_clean$Stage, cox_plus_df_clean$os_event)
+table(cox_plus_df_clean$Gender, cox_plus_df_clean$os_event) # Problematic (complete (or quasi) separation)
+
+# Cox model
+cox_plus_model <- coxph(
+  Surv(os_time, os_event) ~ 
+    `Gene-set Score` +
+    Age +
+    Stage,
+  data = cox_plus_df_clean
+)
+
+summary(cox_plus_model)
+
+cox_plus_plt <-
+  forestmodel::forest_model(cox_plus_model, 
+                            theme = theme_bw() + 
+                              theme(panel.grid.major = element_blank(), 
+                                    panel.grid.minor = element_blank(), 
+                                    axis.title.y = element_blank(), 
+                                    axis.title.x = element_blank(), 
+                                    axis.text.y = element_blank(), 
+                                    axis.ticks.y = element_blank(),
+                                    text = element_text(size = 7),
+                                    strip.text = element_text(size = 7),
+                                    title = element_text(size = 7),
+                                    plot.title = element_text(size = 7),
+                                    plot.subtitle = element_text(size = 7, vjust = 0),
+                                    plot.tag = element_text(size = 7, face = "bold"),
+                                    legend.title = element_text(
+                                      size = 6,
+                                      margin = margin(b = 10)
+                                    ),
+                                    legend.margin = margin(2, 2, 2, 2),
+                                    legend.box.margin = margin(2, 2, 2, 2),
+                                    legend.box.spacing = unit(1, "pt"),
+                                    legend.key.width = unit(0.5, "cm"),
+                                    legend.key.height = unit(0.5, "cm")
+                              )) +
+  labs(subtitle = "Singscore: Upregulated Genes and CD4 EM\nSignature − Downregulated Genes", 
+       y = NULL, 
+       x = NULL, 
+       tag = "e")
+
+cox_plus_plt@layers[[ which(sapply(cox_plus_plt@layers, function(x) inherits(x$geom, "GeomText"))) ]]$aes_params$size <- 2
+
+```
+
+##### Univariate Cox
+
+```{r}
+
+uni_plus_results <- purrr::map_dfr(c("Gene-set Score", "Age", "Stage"), function(v) {
+  
+  df <- cox_plus_df %>%
+    dplyr::select(os_time, os_event, all_of(v)) %>%
+    dplyr::filter(
+      !is.na(os_time),
+      !is.na(os_event),
+      !is.na(.data[[v]])
+    )
+  
+  fit <- coxph(
+    as.formula(paste0("Surv(os_time, os_event) ~ `", v, "`")),
+    data = df
+  )
+  
+  broom::tidy(fit, exponentiate = TRUE, conf.int = TRUE) %>%
+    mutate(variable = v,
+           n = nrow(df),
+           events = sum(df$os_event))
+})
+
+uni_plus_results$term <- gsub("`", "", uni_plus_results$term)
+uni_plus_results$term <- gsub("StageStage", "Stage", uni_plus_results$term)
+
+#________________
+
+uni_plus_results_plt <- 
+  uni_plus_results %>%
+  ggplot(aes(x = estimate, y = reorder(term, estimate), color = p.value)) +
+  geom_point(size = 2) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  scale_x_log10() +
+  scale_color_viridis_c() +
+  labs(x = "Hazard Ratio (log scale)", y = NULL,
+       subtitle = "Univariate Cox HR\nSingscore: Upregulated Genes and CD4 EM\nSignature − Downregulated Genes", color = "Pvalue", tag = "l") +
+  theme_bw(base_size = 7) +
+  theme(
+    text = element_text(size = 7),
+    title = element_text(size = 7),
+    plot.title = element_text(size = 7),
+    plot.subtitle = element_text(size = 7, vjust = 0),
+    axis.title.y = element_blank(),
+    plot.tag = element_text(size = 7, face = "bold"),
+    legend.title = element_text(
+      size = 6,
+      margin = margin(b = 10)
+    ),
+    legend.margin = margin(0, 0, 0, 0),
+    legend.box.margin = margin(0, 0, 0, 5),
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.width = unit(0.25, "cm"),
+    legend.key.height = unit(0.3, "cm")
+  )
+
+```
+
+##### KM plot
+
+```{r}
+
+# KM plot
+
+# Median split
+group_plus <- ifelse(cox_plus_df$`Gene-set Score` > median(cox_plus_df$`Gene-set Score`, na.rm = TRUE), "High", "Low")
+group_plus <- factor(group_plus, levels = c("Low", "High"))
+
+surv_plus_obj <- Surv(cox_plus_df$os_time, cox_plus_df$os_event)
+
+km_plus_fit <- survfit(surv_plus_obj ~ group_plus)
+
+ggsurv_plus <- ggsurvplot(
+  km_plus_fit,
+  data = data.frame(group_plus = group_plus),
+  pval = TRUE,
+  conf.int = FALSE,
+  size = 0.45,
+  censor.size = 2.3,
+  palette = c("#4DBBD5", "#E64B35"),
+  legend.labs = c("Low", "High"),
+  title = "KM Survival Curve\nSingscore: Upregulated Genes and CD4 EM\nSignature − Downregulated Genes",
+  xlab = "Time (months)",
+  ylab = "Overall Survival Probability",
+  pval.coord = c(15, 0.2),
+  ggtheme = theme(
+                  text = element_text(size = 7),
+                  strip.text = element_text(size = 7),
+                  title = element_text(size = 7),
+                  plot.title = element_text(size = 7),
+                  plot.subtitle = element_text(size = 7, vjust = 0),
+                  plot.tag = element_text(size = 7, face = "bold"),
+                  legend.title = element_text(
+                    size = 6,
+                    margin = margin(b = 10)
+                  ),
+                  legend.margin = margin(2, 2, 2, 2),
+                  legend.box.margin = margin(2, 2, 2, 2),
+                  legend.box.spacing = unit(1, "pt"),
+                  legend.key.width = unit(0.5, "cm"),
+                  legend.key.height = unit(0.5, "cm")
+  )
+)
+
+ggsurv_plus$plot$layers[[ which(sapply(ggsurv_plus$plot$layers,function(x) inherits(x$geom, "GeomText"))) ]]$aes_params$size <- 2.5
+
+ggsurv_plus_plt <- ggsurv_plus$plot
+ggsurv_plus_plt <- ggsurv_plus_plt +
+  theme_minimal() +
+  labs(subtitle = NULL, 
+       y = "Overall Survival Probability", 
+       x = "Time (months)", 
+       tag = "m") + 
+  theme(
+        text = element_text(size = 7),
+        strip.text = element_text(size = 7),
+        title = element_text(size = 7),
+        plot.title = element_text(size = 7),
+        plot.subtitle = element_text(size = 7, vjust = 0),
+        plot.tag = element_text(size = 7, face = "bold"),
+        legend.title = element_text(
+          size = 6,
+          margin = margin(b = 10)
+        ),
+        legend.margin = margin(2, 2, 2, 2),
+        legend.box.margin = margin(2, 2, 2, 2),
+        legend.box.spacing = unit(1, "pt"),
+        legend.key.width = unit(0.5, "cm"),
+        legend.key.height = unit(0.5, "cm")
+  )
+
+```
+
+### Fifth row figure
+
+```{r}
+
+# Second row figure
+## Combine the plots of the subset
+cd4_em_second_row_figure <- 
+  uni_plus_results_plt + patchwork::plot_spacer() + ggsurv_plus_plt + 
+       plot_layout(widths = c(1.2, 0.7, 1), heights = c(1), guides = "keep", axes = "keep") &
+  theme(plot.margin = margin(t = 2, r = 5, b = 2, l = 5))
+
+ggsave(filename = "../../../Testing results/cd4_em_second_row_figure.png", 
+       plot = cd4_em_second_row_figure, device = "png", width = 6.85, height = (1.762)*1.5, units = "in", dpi = 300)
+
+ggsave(filename = "../../../Testing results/cd4_em_second_row_figure.pdf", 
+       plot = cd4_em_second_row_figure, device = "pdf", width = 6.85, height = (1.762)*1.5, units = "in", dpi = 300)
+
+```
+
+# Combine all rows
+
+```{r}
+
+bcscm_t_nk_paper_subs_combined_rows <- 
+  wrap_plots(wrap_elements(bcscm_first_row) & theme(plot.margin = margin(b = -50)),
+             wrap_elements(bcscm_paperTypes_second_row + theme(plot.margin = margin(t = -50))), 
+             wrap_elements(bcscm_third_row), 
+             # wrap_elements(bcscm_conflicting_row),
+             wrap_elements(cd4_em_second_row_figure),
+             heights = c(1.4, 0.9, 1.3, 1.2)) & theme(plot.margin = margin(0, 0, 0, 0))
+
+ggsave(filename = "../../../Testing results/bcscm_t_nk_paper_subs_combined_rows.pdf", 
+       plot = bcscm_t_nk_paper_subs_combined_rows, device = "pdf", width = 6.85, height = (1.762)*5, units = "in", dpi = 300)
+
+# ggsave(filename = "../../../Testing results/bcscm_t_nk_paper_subs_combined_rows.png", 
+#        plot = bcscm_t_nk_paper_subs_combined_rows, device = "png", width = 6.85, height = (1.762)*5, units = "in", dpi = 300)
+
+```

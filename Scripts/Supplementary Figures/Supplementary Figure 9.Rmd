@@ -1,0 +1,1429 @@
+---
+title: "Evaluating ClustoCell's Performance for feature extraction for dimension reduction"
+author: "Adrian Salavaty"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+
+Sys.setenv(
+  RETICULATE_PYTHON = "/Users/salavatyadrian/miniforge3/envs/scanpy_env/bin/python",
+  RETICULATE_AUTOCONFIGURE = "FALSE",
+  OMP_NUM_THREADS = "1",
+  MKL_NUM_THREADS = "1",
+  VECLIB_MAXIMUM_THREADS = "1",
+  OPENBLAS_NUM_THREADS = "1"
+)
+
+library(reticulate)
+
+py_config()
+
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(pROC)
+library(umap)
+library(cluster)
+library(ggplot2)
+library(dplyr)
+library(splatter)
+library(Seurat)
+library(tidyverse)
+library(scplotter)
+library(scran)
+library(scater)
+library(SingleCellExperiment)
+library(patchwork)
+library(ggpubr)
+library(scales)
+library(PMCMRplus)  # For Friedman post-hoc
+library(reshape2)
+
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(pROC)
+library(umap)
+library(cluster)
+library(ggplot2)
+library(dplyr)
+library(splatter)
+library(Seurat)
+library(tidyverse)
+library(scplotter)
+library(scran)
+library(scater)
+library(Matrix)
+library(SeuratDisk)
+library(hdf5r)
+library(patchwork)
+library(paletteer)
+library(hrbrthemes)
+library(reticulate)
+library(data.table)
+library(Matrix)
+library(dplyr)
+library(purrr)
+library(rlang)
+
+```
+
+# Benchmarking ClustoCell's marker prioritizations
+
+## Introduction
+
+Script for Benchmarking ClustoCell's marker prioritizations against contemporary methods.
+
+## Function Defintion
+
+We first define some helper functions.
+
+```{r}
+
+# Personalized Theme function
+
+styled_theme <- function(
+  style = c("academic", "minimal", "modern", "dark", "classic", "void"),
+  border_mode = c("default", "all", "none"),
+  title_align = c("center", "left", "right"),
+  legends_to_drop = NULL,
+  axes_title_drop = FALSE,
+  legend_position = c("default", "top", "bottom", "left", "right", "inside"),
+  axis_title_face = c("regular", "bold"),
+  x_axis_text_angle = 45,
+  x_axis_text_y = -0.3,
+  remove_margin = c("none", "bottom", "all", "top", "left", "right")
+) {
+  style <- match.arg(style)
+  border_mode <- match.arg(border_mode)
+  title_align <- match.arg(title_align)
+  legend_position <- match.arg(legend_position)
+  axis_title_face <- match.arg(axis_title_face)
+  remove_margin <- match.arg(remove_margin)
+
+  base_font <- "Helvetica"
+  align_map <- c(left = 0, center = 0.5, right = 1)
+  hjust_val <- align_map[title_align]
+  thin_size <- 0.3  
+
+  # Decide axis title face
+  axis_face_val <- ifelse(axis_title_face == "bold", "bold", "plain")
+
+  # Base theme selection
+  if (style == "void") {
+    theme_out <- theme_classic(base_size = 13, base_family = base_font) +
+      theme(
+        axis.title.x = element_blank(),  
+        axis.title.y = element_blank(),  
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "academic") {
+    theme_out <- theme_minimal(base_size = 14, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 16, hjust = hjust_val),
+        plot.subtitle = element_text(size = 13, hjust = hjust_val, color = "grey30"),
+        plot.caption = element_text(size = 10, hjust = 1, color = "grey40"),
+        axis.title = element_text(face = axis_face_val, size = 13),
+        axis.text = element_text(size = 12, color = "black"),
+        panel.grid.major = element_line(color = "grey80", size = thin_size),
+        panel.grid.minor = element_blank(),
+        legend.position = "right",
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "minimal") {
+    theme_out <- theme_minimal(base_size = 13, base_family = base_font) +
+      theme(
+        panel.grid = element_blank(),
+        axis.line = element_line(color = "black", size = thin_size),
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.text = element_text(color = "black"),
+        axis.title = element_text(face = axis_face_val),
+        legend.position = "none",
+        legend.title = element_text(face = "italic")
+      )
+  } else if (style == "modern") {
+    theme_out <- theme_light(base_size = 13, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(color = "grey80", linetype = "dashed", size = thin_size),
+        panel.grid.minor = element_blank(),
+        legend.position = "bottom",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "dark") {
+    theme_out <- theme_minimal(base_size = 13, base_family = base_font) +
+      theme(
+        plot.background = element_rect(fill = "black", color = NA),
+        panel.background = element_rect(fill = "black", color = NA),
+        panel.grid.major = element_line(color = "grey30", size = thin_size),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, color = "white", hjust = hjust_val),
+        plot.subtitle = element_text(color = "grey80", hjust = hjust_val),
+        axis.text = element_text(color = "white"),
+        axis.title = element_text(color = "white", face = axis_face_val),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.text = element_text(color = "white"),
+        legend.title = element_text(color = "white", face = "italic"),
+        axis.line = element_line(color = "white", size = thin_size)
+      )
+  } else if (style == "classic") {
+    theme_out <- theme_classic(base_size = 13, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  }
+
+  # Apply border mode
+  if (border_mode == "all") {
+    theme_out <- theme_out + theme(panel.border = element_rect(color = "black", fill = NA, size = thin_size))
+  } else if (border_mode == "none") {
+    theme_out <- theme_out + theme(panel.border = element_blank(), axis.line = element_blank())
+  }
+
+  # Drop axes titles if requested
+  if (axes_title_drop) {
+    theme_out <- theme_out + theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+  }
+
+  # Override x-axis text angle and vertical position
+  theme_out <- theme_out + theme(
+    axis.text.x = element_text(
+      angle = x_axis_text_angle,
+      vjust = 1,
+      hjust = 1,
+      margin = margin(t = x_axis_text_y)
+    )
+  )
+
+  # Handle margin removal
+  if (remove_margin == "all") {
+    theme_out <- theme_out + theme(plot.margin = margin(0, 0, 0, 0))
+  } else if (remove_margin == "top") {
+    theme_out <- theme_out + theme(plot.margin = margin(t = 0))
+  } else if (remove_margin == "bottom") {
+    theme_out <- theme_out + theme(plot.margin = margin(b = 0))
+  } else if (remove_margin == "left") {
+    theme_out <- theme_out + theme(plot.margin = margin(l = 0))
+  } else if (remove_margin == "right") {
+    theme_out <- theme_out + theme(plot.margin = margin(r = 0))
+  }
+  # if "none", do nothing
+
+  # Legend positioning override
+  if (legend_position != "default") {
+    if (legend_position == "inside") {
+      theme_out <- theme_out + theme(
+        legend.position = c(0.98, 0.98),
+        legend.justification = c("right", "top"),
+        legend.direction = "vertical"
+      )
+    } else {
+      horiz <- legend_position %in% c("top", "bottom")
+      theme_out <- theme_out + theme(
+        legend.position = legend_position,
+        legend.direction = if (horiz) "horizontal" else "vertical"
+      )
+    }
+  }
+
+  # Return theme + guides if needed
+  if (!is.null(legends_to_drop)) {
+    drop_list <- lapply(legends_to_drop, function(x) "none")
+    names(drop_list) <- legends_to_drop
+    return(list(theme_out, guides(.list = drop_list)))
+  } else {
+    return(theme_out)
+  }
+}
+
+#____________
+
+# Label plot
+label_plt <- function(label = "Label", size = 1) {
+  ggplot(data.frame(x = 1, y = 1), aes(x = x, y = y)) +
+    # Draw a single vertical bar
+    geom_col(width = 0.6, fill = "lightgrey", color = "black") +
+    # Add vertical text (angle=90)
+    annotate("text", x = 1, y = 0.5, label = label, size = size,
+             angle = 90, size = 6, vjust = 0.5, hjust = 0.5) +
+    # Remove all extra space
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0), limits = c(0, 1)) +
+    theme_void(base_size = 14) +             # no axes, ticks, labels
+    theme(
+        plot.margin = margin(0, 0, 0, 0),      # remove outside margins
+        panel.spacing = unit(0, "pt"),         # remove panel padding
+        plot.background = element_blank(),     # no background
+        panel.background = element_blank()
+    )
+}
+
+## Theme function for the table plots
+custom_tbl_theme <- ttheme(
+  "blank",
+  base_size = 5,  # Increased for scaling height
+  padding = unit(c(1, 2), "mm"),  # Small horizontal, larger vertical padding to expand row heights; adjust vertical as needed
+  tbody.style = tbody_style(
+    color = "black",
+    fill = cbind(rep(c("white", "grey95"), length.out = 10), rep(c("white", "grey95"), length.out = 10)),
+    hjust = 0,  # Left align body text
+    x = 0.02,   # Adjust horizontal position for left alignment
+    fontsize = 5  # Increased for scaling height
+  ),
+  colnames.style = colnames_style(
+    color = "transparent",  # Make column names invisible to remove header
+    fill = "white",
+    fontsize = 0  # Set font size to 0 to effectively hide
+  )
+)
+
+custom_tbl_plusHeader_theme <- ttheme(
+  "blank",
+  base_size = 5,  # Increased for scaling height
+  padding = unit(c(1, 2), "mm"),  # Small horizontal, larger vertical padding to expand row heights; adjust vertical as needed
+  tbody.style = tbody_style(
+    color = "black",
+    fill = cbind(rep(c("white", "grey95"), length.out = 10), rep(c("white", "grey95"), length.out = 10)),
+    hjust = 0,  # Left align body text
+    x = 0.02,   # Adjust horizontal position for left alignment
+    fontsize = 5  # Increased for scaling height
+  ),
+  colnames.style = colnames_style(
+    # color = "transparent",  # Make column names invisible to remove header
+    fill = "lightgrey",
+    fontsize = 5  # Set font size to 0 to effectively hide
+  )
+)
+
+#_____________________
+
+# Min-Max Normalize function
+min_max_norm <- function(x) {
+  min_val <- min(x)
+  max_val <- max(x)
+  if (max_val > min_val) {
+    return((x - min_val) / (max_val - min_val))
+  } else {
+    return(rep(0, length(x)))
+  }
+}
+
+#______________________
+
+# Create a custom formatter for bolding only Avg.[Score] in the heatmap plots
+bold_labeller <- function(x) {
+  lapply(x, function(val) {
+    if (val == "Median Score") {
+      expression(bold("Median Score"))[[1]]
+    } else {
+      parse(text = val)[[1]]
+    }
+  }) |> as.expression()
+}
+
+```
+
+
+```{r}
+
+# Concordance = 100*Sum(rowMax)/N
+
+# Best pals from ggsci: pal_npg (10), pal_d3 (20), pal_ucscgb (26), pal_igv (51)
+
+plotthis::palette_list %>% names()
+
+# NPG colors:
+# "#E64B35FF" "#4DBBD5FF" "#00A087FF" "#3C5488FF" "#F39B7FFF" "#8491B4FF" "#91D1C2FF" "#DC0000FF" "#7E6148FF" "#B09C85FF"
+
+# "#5050FFFF" "#CE3D32FF" "#749B58FF" "#F0E685FF" "#466983FF" "#BA6338FF" "#5DB1DDFF" "#802268FF" "#6BD76BFF" "#D595A7FF" "#924822FF" "#837B8DFF" "#C75127FF"
+# "#D58F5CFF" "#7A65A5FF" "#E4AF69FF" "#3B1B53FF" "#CDDEB7FF" "#612A79FF" "#AE1F63FF" "#E7C76FFF" "#5A655EFF" "#CC9900FF" "#99CC00FF" "#A9A9A9FF" "#CC9900FF"
+# "#99CC00FF" "#33CC00FF" "#00CC33FF" "#00CC99FF"
+
+# Define the color palettes
+
+npg_pal <- ggsci::pal_npg()(10)
+npg_reverse_pal <- rev(ggsci::pal_npg("nrc")(10))
+
+```
+
+## Data preparation
+
+## Peritumoral Normal Liver
+
+Data was downloaded from https://explore.data.humancellatlas.org/projects/a27dd619-25ad-46a0-ae0c-5c4940a1139b
+https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE153643
+https://pubmed.ncbi.nlm.nih.gov/33654293/
+
+```{r}
+
+library(zellkonverter)
+
+liver_tumor_adj <- readH5AD("../../../Benchmarking/Test Datasets/Healthy liver tissue adjacent to tumor/GSM4648565_liver_raw_counts.h5ad")
+liver_tumor_adj_count <- liver_tumor_adj@assays@data$X %>% t()
+liver_tumor_adj_meta <- fread("../../../Benchmarking/Test Datasets/Healthy liver tissue adjacent to tumor/GSM4648565_liver_celltypes.csv.gz", header = F)
+colnames(liver_tumor_adj_meta) <- c("Cell", "Celltype")
+
+all(liver_tumor_adj_meta$Cell %in% colnames(liver_tumor_adj_count)) # TRUE
+liver_tumor_adj_count <- liver_tumor_adj_count[,liver_tumor_adj_meta$Cell]
+all(liver_tumor_adj_meta$Cell == colnames(liver_tumor_adj_count)) # TRUE
+
+liver_tumor_adj <- CreateSeuratObject(counts = liver_tumor_adj_count, meta.data = liver_tumor_adj_meta)
+liver_tumor_adj$manual_annot <- liver_tumor_adj$Celltype
+liver_tumor_adj$major_manual_annot <- sapply(liver_tumor_adj$manual_annot, function(i) unlist(str_split(i, " "))[1])
+
+liver_tumor_adj@meta.data <- liver_tumor_adj@meta.data %>%
+  dplyr::mutate(minor_manual_annot1 = case_when(
+    as.character(manual_annot) %in% c("Epithelial (Cholangiocyte)") ~ "Cholangiocyte",
+    as.character(manual_annot) %in% c("Epithelial (Hepatocyte)") ~ "Hepatocyte",
+    as.character(manual_annot) %in% c("Immune (Lymphocyte)") ~ "Lymphocyte",
+    as.character(manual_annot) %in% c("Immune (Macrophage)") ~ "Myeloid",
+    as.character(manual_annot) %in% c("Immune (Myeloid)") ~ "Myeloid",
+    as.character(manual_annot) %in% c("Stromal (Endothelial)") ~ "Endothelial",
+    as.character(manual_annot) %in% c("Stromal (SMC)") ~ "SMC",
+    .default = manual_annot
+  ))
+
+# Normalizing the data
+liver_tumor_adj <- NormalizeData(liver_tumor_adj, normalization.method = "LogNormalize", scale.factor = 10000)
+
+# Identification of highly variable features (feature selection)
+liver_tumor_adj <- FindVariableFeatures(liver_tumor_adj, selection.method = "vst", nfeatures = 2000)
+
+# Scaling the data
+liver_tumor_adj <- ScaleData(liver_tumor_adj, features = VariableFeatures(liver_tumor_adj))
+
+# Perform linear dimensional reduction
+liver_tumor_adj <- RunPCA(liver_tumor_adj, features = VariableFeatures(object = liver_tumor_adj))
+
+# Elbow plot
+ElbowPlot(liver_tumor_adj, ndims = 50)
+
+# Cluster the cells
+# liver_tumor_adj <- FindNeighbors(liver_tumor_adj, dims = 1:20)
+# liver_tumor_adj <- FindClusters(liver_tumor_adj, resolution = 0.5)
+
+# Run non-linear dimensional reduction
+liver_tumor_adj <- RunUMAP(liver_tumor_adj, dims = 1:20)
+
+qs2::qs_save(object = liver_tumor_adj, file = "../../../Benchmarking/Test Datasets/Healthy liver tissue adjacent to tumor/liver_tumor_adj.qs2")
+
+qs2::qs_save(object = liver_tumor_adj, file = "../../../Benchmarking/Test Datasets/Healthy liver tissue adjacent to tumor/liver_tumor_adj.qs2")
+
+liver_tumor_adj <- qs2::qs_read("../../../Benchmarking/Test Datasets/Healthy liver tissue adjacent to tumor/liver_tumor_adj.qs2")
+liver_tumor_adj_manual_annot_markoClust <- qs2::qs_read("../../../Benchmarking/Deconvolution/liver_tumor_adj_manual_annot_markoClust.qs2")
+
+```
+
+## Prostate Cell Atlas (EGAS00001005787)
+
+The data was downloaded from https://www.prostatecellatlas.org/
+https://ega-archive.org/studies/EGAS00001005787
+
+```{r}
+
+prostateimmuneatlas <- read_rds("../../../Benchmarking/Test Datasets/Prostate Cancer Cell Atlas/prostate_portal_300921.RDS")
+prostateimmuneatlas <- Seurat::as.Seurat(prostateimmuneatlas)
+
+prostateimmuneatlas$manual_annot <- as.character(prostateimmuneatlas$celltype)
+prostateimmuneatlas$manual_annot[prostateimmuneatlas$manual_annot %in% c("LE-KLK3", "LE-KLK4")] <- "LE"
+
+prostateimmuneatlas@meta.data <- prostateimmuneatlas@meta.data %>%
+  dplyr::mutate(manual_annot = case_when(
+    as.character(manual_annot) %in% c("Mast cell") ~ "Mast",
+    as.character(manual_annot) %in% c("NK cell") ~ "NK",
+    as.character(manual_annot) %in% c("T cell") ~ "T",
+    as.character(manual_annot) %in% c("B cell") ~ "B",
+    .default = manual_annot
+  ))
+
+# Normalizing the data
+prostateimmuneatlas <- NormalizeData(prostateimmuneatlas, normalization.method = "LogNormalize", scale.factor = 10000)
+
+# Identification of highly variable features (feature selection)
+prostateimmuneatlas <- FindVariableFeatures(prostateimmuneatlas, selection.method = "vst", nfeatures = 2000)
+
+# Scaling the data
+prostateimmuneatlas <- ScaleData(prostateimmuneatlas, features = VariableFeatures(prostateimmuneatlas))
+
+prostateimmuneatlas[["RNA"]] <- prostateimmuneatlas[["originalexp"]]
+DefaultAssay(prostateimmuneatlas) <- "RNA"
+prostateimmuneatlas[["originalexp"]] <- NULL
+
+qs2::qs_save(object = prostateimmuneatlas, file = "../../../Benchmarking/Test Datasets/Prostate Cancer Cell Atlas/prostateimmuneatlas.qs2")
+
+prostateimmuneatlas <- qs2::qs_read("../../../Benchmarking/Test Datasets/Prostate Cancer Cell Atlas/prostateimmuneatlas.qs2")
+prostateimmuneatlas_manual_annot_markoClust <- qs2::qs_read("../../../Benchmarking/Deconvolution/prostateimmuneatlas_manual_annot_markoClust.qs2")
+
+```
+
+## Query Data Prep
+
+### GSE115469
+
+Data was downloaded from https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE115469
+https://www.ncbi.nlm.nih.gov/pubmed/30348985
+
+```{r}
+
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 100)
+
+GSE115469_df <- read_csv(file = "../../../Benchmarking/Test Datasets/GSE115469/GSE115469_Data.csv.gz") # Data is already normalized and log-transformed
+GSE115469_df <- GSE115469_df %>% column_to_rownames("...1")
+
+GSE115469_meta_df <- read_delim(file = "../../../Benchmarking/Test Datasets/GSE115469/GSE115469_CellClusterType.txt.gz")
+
+ncol(GSE115469_df) == nrow(GSE115469_meta_df) # T
+identical(colnames(GSE115469_df), GSE115469_meta_df$CellName) # T
+
+GSE115469_so <- CreateSeuratObject(counts = GSE115469_df, meta.data = GSE115469_meta_df)
+
+GSE115469_so$CellType %>% table() %>% names() %>% cat(sep = ", ")
+
+liver_tumor_adj$minor_manual_annot1 %>% table() %>% names() %>% cat(sep = ", ")
+
+```
+
+### GSE185344
+Data was downloaded from https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE185344
+https://www.ncbi.nlm.nih.gov/pubmed/36229464
+https://www.nature.com/articles/s41467-022-33780-1
+
+```{r}
+
+GSE185344_so <- readRDS(
+  gzcon(gzfile("../../../Benchmarking/Test Datasets/GSE185344/GSE185344_PH_scRNA.final.rds.gz"))
+)
+
+GSE185344_so <- GSE185344_so$obj
+
+GSE185344_meta <- read.csv("../../../Benchmarking/Test Datasets/GSE185344/GSE185344_PH_scRNA.rename_cluster.csv")
+
+nrow(GSE185344_meta) == ncol(GSE185344_so) # T
+identical(GSE185344_meta$X, colnames(GSE185344_so)) #T
+
+GSE185344_so@meta.data <- cbind(GSE185344_so@meta.data, GSE185344_meta)
+
+GSE185344_so$cellactivity_clusters %>% table() %>% names() %>% cat(sep = ", ")
+
+prostateimmuneatlas$manual_annot %>% table() %>% names() %>% cat(sep = ", ")
+
+```
+
+## Performing the benchmarking
+
+### Input params and helper functions
+
+```{r}
+
+# ==============================================================================
+# ClustoCell marker benchmarking for liver and prostate scRNA-seq datasets
+# ==============================================================================
+# Reference datasets (marker discovery / signature construction):
+#   liver_tumor_adj       labels: minor_manual_annot1
+#   prostateimmuneatlas   labels: manual_annot
+#
+# Query datasets (pseudobulk generation / ground-truth proportions):
+#   GSE115469_so          labels: CellType -> benchmark_celltype
+#   GSE185344_so          labels: cellactivity_clusters -> benchmark_celltype
+#
+# Benchmarks:
+#   1. DWLS default Seurat marker signature vs ClustoCell-marker signature
+#   2. BayesPrism default marker selection vs ClustoCell-marker gene space
+#
+# ============================================================================== 
+
+# ------------------------------- 0. PACKAGES -----------------------------------
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(dplyr)
+  library(tidyr)
+  library(purrr)
+  library(ggplot2)
+  library(Matrix)
+  library(DescTools)
+  library(boot)
+  library(patchwork)
+})
+
+# ----------------------------- 1. USER SETTINGS --------------------------------
+DWLS_SOURCE <- "../../../Benchmarking/Deconvolution/DWLS/Deconvolution_functions.R"
+BASE_OUT_DIR <- "../../../Benchmarking/Deconvolution/Liver_Prostate"
+
+N_BULK     <- 100
+CELLS_BULK <- 1000
+BOOT_R      <- 5000
+TOP_N       <- 10
+SEED_GLOBAL <- 121
+
+# BayesPrism settings
+RUN_BAYESPRISM <- TRUE
+SPECIES         <- "hs"
+PSEUDO_COUNT    <- 0.1
+CELL_COUNT_CUT  <- 50
+PVAL_MAX        <- 0.01
+LFC_MIN         <- 0.1
+EXP_CELLS       <- 5
+OUTLIER_CUT     <- 0.01
+OUTLIER_FRAC    <- 0.1
+N_CORES         <- max(1, parallel::detectCores() - 1)
+SEED_BP         <- 2024
+
+# Reproduce the ordering used in the supplied PBMC script.
+# TRUE ranks significant default markers by decreasing adjusted P value.
+# Set FALSE for the more conventional most-significant-first ordering.
+DEFAULT_ORDER_PADJ_DECREASING <- TRUE
+
+dir.create(BASE_OUT_DIR, recursive = TRUE, showWarnings = FALSE)
+
+if (!file.exists(DWLS_SOURCE)) {
+  stop("DWLS functions file not found: ", DWLS_SOURCE)
+}
+source(DWLS_SOURCE)
+
+if (RUN_BAYESPRISM && !requireNamespace("BayesPrism", quietly = TRUE)) {
+  stop(
+    "RUN_BAYESPRISM is TRUE but BayesPrism is not installed. Install it with:\n",
+    "remotes::install_github('Danko-Lab/BayesPrism/BayesPrism')\n",
+    "or set RUN_BAYESPRISM <- FALSE."
+  )
+}
+
+# --------------------------- 2. INPUT VALIDATION -------------------------------
+required_objects <- c(
+  "liver_tumor_adj",
+  "GSE115469_so",
+  "liver_tumor_adj_manual_annot_markoClust",
+  "prostateimmuneatlas",
+  "GSE185344_so",
+  "prostateimmuneatlas_manual_annot_markoClust"
+)
+missing_objects <- required_objects[!vapply(required_objects, exists, logical(1), inherits = TRUE)]
+if (length(missing_objects) > 0) {
+  stop("Missing required object(s): ", paste(missing_objects, collapse = ", "))
+}
+
+# ------------------------------- 3. HELPERS ------------------------------------
+get_counts <- function(obj, assay = "RNA") {
+  out <- tryCatch(
+    GetAssayData(obj, assay = assay, layer = "counts"),
+    error = function(e) GetAssayData(obj, assay = assay, slot = "counts")
+  )
+  if (nrow(out) == 0 || ncol(out) == 0) stop("Empty count matrix.")
+  out
+}
+
+clean_labels <- function(x) {
+  x <- as.character(x)
+  x[x == "" | is.na(x)] <- NA_character_
+  x
+}
+
+scalar_ccc <- function(truth, pred) {
+  keep <- is.finite(truth) & is.finite(pred)
+  truth <- truth[keep]
+  pred  <- pred[keep]
+  if (length(truth) < 2 || stats::sd(truth) == 0 || stats::sd(pred) == 0) {
+    return(NA_real_)
+  }
+  out <- tryCatch(DescTools::CCC(truth, pred)$rho.c, error = function(e) NA_real_)
+  if (is.data.frame(out) || is.matrix(out)) out <- out[1, 1]
+  as.numeric(out)[1]
+}
+
+metric_summary <- function(truth, pred) {
+  keep <- is.finite(truth) & is.finite(pred)
+  truth <- truth[keep]
+  pred  <- pred[keep]
+  if (length(truth) == 0) {
+    return(tibble(Pearson = NA_real_, Spearman = NA_real_, CCC = NA_real_,
+                  RMSE = NA_real_, MAE = NA_real_))
+  }
+  pearson <- if (length(truth) < 2 || sd(truth) == 0 || sd(pred) == 0) {
+    NA_real_
+  } else {
+    suppressWarnings(cor(truth, pred, method = "pearson"))
+  }
+  spearman <- if (length(truth) < 2 || sd(truth) == 0 || sd(pred) == 0) {
+    NA_real_
+  } else {
+    suppressWarnings(cor(truth, pred, method = "spearman"))
+  }
+  tibble(
+    Pearson  = pearson,
+    Spearman = spearman,
+    CCC      = scalar_ccc(truth, pred),
+    RMSE     = sqrt(mean((pred - truth)^2)),
+    MAE      = mean(abs(pred - truth))
+  )
+}
+
+celltype_metrics <- function(truth_mat, pred_mat, method_name) {
+  stopifnot(identical(dim(truth_mat), dim(pred_mat)))
+  bind_rows(lapply(colnames(truth_mat), function(ct) {
+    metric_summary(truth_mat[, ct], pred_mat[, ct]) %>%
+      mutate(CellType = ct, Method = method_name, .before = 1)
+  }))
+}
+
+boot_diff_ci <- function(x, y, R = BOOT_R) {
+  keep <- is.finite(x) & is.finite(y)
+  d <- x[keep] - y[keep]
+  if (length(d) < 2) {
+    return(list(Mean = if (length(d)) mean(d) else NA_real_,
+                Lower = NA_real_, Upper = NA_real_))
+  }
+  stat <- function(data, idx) mean(data[idx], na.rm = TRUE)
+  b <- boot::boot(d, statistic = stat, R = R)
+  ci <- tryCatch(boot::boot.ci(b, type = "perc"), error = function(e) NULL)
+  if (is.null(ci) || is.null(ci$percent)) {
+    qs <- quantile(b$t[, 1], c(0.025, 0.975), na.rm = TRUE)
+    return(list(Mean = mean(d), Lower = unname(qs[1]), Upper = unname(qs[2])))
+  }
+  list(Mean = mean(d), Lower = ci$percent[4], Upper = ci$percent[5])
+}
+
+extract_top_clustocell_markers <- function(markoclust_obj, top_n = 10) {
+  marker_tables <- markoclust_obj$markers$major_clusters$cluster_specific$positive_markers
+  if (is.null(marker_tables) || !is.list(marker_tables)) {
+    stop("Could not find markers$major_clusters$cluster_specific$positive_markers.")
+  }
+  out <- lapply(marker_tables, function(tbl) {
+    if (!all(c("Rank", "Feature") %in% colnames(tbl))) {
+      stop("Each marker table must contain Rank and Feature columns.")
+    }
+    tbl %>%
+      filter(!is.na(Rank), Rank <= top_n, !is.na(Feature), Feature != "") %>%
+      arrange(Rank) %>%
+      pull(Feature) %>%
+      unique()
+  })
+  out <- out[lengths(out) > 0]
+  out[names(out) != "NA" & !is.na(names(out))]
+}
+
+combine_marker_classes <- function(markers_list, class_map) {
+  # class_map must be a named character vector: old label -> harmonized label/NA.
+  old_names <- names(markers_list)
+  new_names <- unname(class_map[old_names])
+  keep <- !is.na(new_names) & new_names != ""
+  split_genes <- split(unlist(markers_list[keep], use.names = FALSE),
+                       rep(new_names[keep], lengths(markers_list[keep])))
+  lapply(split_genes, unique)
+}
+
+restrict_marker_list <- function(markers_list, allowed_celltypes, reference_genes) {
+  markers_list <- markers_list[intersect(names(markers_list), allowed_celltypes)]
+  markers_list <- lapply(markers_list, function(x) unique(intersect(x, reference_genes)))
+  markers_list[lengths(markers_list) > 0]
+}
+
+make_pseudobulks <- function(query_counts, query_labels, celltypes,
+                             n_bulk = N_BULK, cells_per_bulk = CELLS_BULK,
+                             seed = SEED_GLOBAL) {
+  query_labels <- clean_labels(query_labels)
+  names(query_labels) <- colnames(query_counts)
+  eligible <- names(query_labels)[query_labels %in% celltypes]
+  if (length(eligible) == 0) stop("No eligible query cells after label harmonization.")
+  if (cells_per_bulk > length(eligible)) {
+    warning("CELLS_BULK reduced from ", cells_per_bulk, " to ", length(eligible),
+            " because the query has fewer eligible cells.")
+    cells_per_bulk <- length(eligible)
+  }
+
+  pseudobulk_list <- vector("list", n_bulk)
+  truth_list <- vector("list", n_bulk)
+  set.seed(seed)
+  for (i in seq_len(n_bulk)) {
+    set.seed(seed + i)
+    sampled_cells <- sample(eligible, size = cells_per_bulk, replace = FALSE)
+    pseudobulk_list[[i]] <- Matrix::rowSums(query_counts[, sampled_cells, drop = FALSE])
+    tab <- table(factor(query_labels[sampled_cells], levels = celltypes))
+    prop <- as.numeric(tab) / sum(tab)
+    names(prop) <- celltypes
+    truth_list[[i]] <- prop
+  }
+  truth_mat <- do.call(rbind, truth_list)
+  rownames(truth_mat) <- paste0("pseudobulk_", seq_len(n_bulk))
+  list(bulk_list = pseudobulk_list, truth = truth_mat,
+       cells_per_bulk = cells_per_bulk)
+}
+
+build_signature_default <- function(obj, label_col, allowed_celltypes,
+                                    diff.cutoff = 0.5, pval.cutoff = 0.01,
+                                    order_padj_decreasing = DEFAULT_ORDER_PADJ_DECREASING) {
+  labels <- clean_labels(obj[[label_col, drop = TRUE]])
+  keep_cells <- colnames(obj)[labels %in% allowed_celltypes]
+  obj <- subset(obj, cells = keep_cells)
+  obj[[label_col]] <- factor(as.character(obj[[label_col, drop = TRUE]]),
+                             levels = allowed_celltypes)
+  Idents(obj) <- label_col
+  counts <- get_counts(obj)
+  labels <- as.character(obj[[label_col, drop = TRUE]])
+
+  de_all <- FindAllMarkers(
+    obj,
+    only.pos = TRUE,
+    test.use = "wilcox",
+    logfc.threshold = diff.cutoff,
+    min.pct = 0.1,
+    verbose = FALSE
+  )
+  fc_col <- intersect(c("avg_log2FC", "avg_logFC"), colnames(de_all))[1]
+  if (is.na(fc_col)) stop("Could not identify Seurat fold-change column.")
+  de_filtered <- de_all[
+    is.finite(de_all$p_val_adj) & de_all$p_val_adj < pval.cutoff &
+      is.finite(de_all[[fc_col]]) & de_all[[fc_col]] > diff.cutoff,
+    , drop = FALSE
+  ]
+
+  cluster_tables <- setNames(vector("list", length(allowed_celltypes)), allowed_celltypes)
+  number_genes <- setNames(integer(length(allowed_celltypes)), allowed_celltypes)
+  for (ct in allowed_celltypes) {
+    x <- de_filtered[as.character(de_filtered$cluster) == ct, , drop = FALSE]
+    if (nrow(x)) {
+      x <- x[grep("^MIR|^Mir", x$gene, invert = TRUE), , drop = FALSE]
+      x <- x[order(x$p_val_adj, decreasing = order_padj_decreasing), , drop = FALSE]
+    }
+    cluster_tables[[ct]] <- x
+    number_genes[ct] <- nrow(x)
+  }
+  if (any(number_genes == 0)) {
+    stop("No default DE markers for: ", paste(names(number_genes)[number_genes == 0], collapse = ", "))
+  }
+
+  max_g <- min(200, max(number_genes))
+  min_g <- min(50, min(number_genes))
+  if (max_g < 2) stop("Too few default DE genes to build a signature.")
+  G_range <- seq.int(max(2, min_g), max_g)
+  kappas <- rep(Inf, length(G_range))
+
+  for (j in seq_along(G_range)) {
+    G <- G_range[j]
+    genes <- unique(unlist(lapply(allowed_celltypes, function(ct) {
+      head(cluster_tables[[ct]]$gene, min(G, number_genes[ct]))
+    })))
+    genes <- intersect(genes, rownames(counts))
+    if (length(genes) < 2) next
+    sig <- sapply(allowed_celltypes, function(ct) {
+      Matrix::rowMeans(counts[genes, labels == ct, drop = FALSE])
+    })
+    kappas[j] <- tryCatch(kappa(sig), error = function(e) Inf)
+  }
+  best <- which.min(kappas)
+  if (!length(best) || !is.finite(kappas[best])) stop("No valid default signature matrix.")
+  G <- G_range[best]
+  genes <- unique(unlist(lapply(allowed_celltypes, function(ct) {
+    head(cluster_tables[[ct]]$gene, min(G, number_genes[ct]))
+  })))
+  genes <- intersect(genes, rownames(counts))
+  sig <- sapply(allowed_celltypes, function(ct) {
+    Matrix::rowMeans(counts[genes, labels == ct, drop = FALSE])
+  })
+  rownames(sig) <- genes
+  colnames(sig) <- allowed_celltypes
+  attr(sig, "optimal_G") <- G
+  sig
+}
+
+build_signature_clustocell <- function(ref_counts, ref_labels, markers_list,
+                                       allowed_celltypes) {
+  ref_labels <- clean_labels(ref_labels)
+  markers_list <- restrict_marker_list(markers_list, allowed_celltypes, rownames(ref_counts))
+  missing_ct <- setdiff(allowed_celltypes, names(markers_list))
+  if (length(missing_ct)) {
+    stop("No usable ClustoCell markers for: ", paste(missing_ct, collapse = ", "))
+  }
+  genes <- unique(unlist(markers_list[allowed_celltypes], use.names = FALSE))
+  sig <- sapply(allowed_celltypes, function(ct) {
+    cells <- which(ref_labels == ct)
+    Matrix::rowMeans(ref_counts[genes, cells, drop = FALSE])
+  })
+  rownames(sig) <- genes
+  colnames(sig) <- allowed_celltypes
+  sig
+}
+
+safe_deconvolve_dwls <- function(sig, bulk_list, celltypes, method_label) {
+  results <- matrix(NA_real_, nrow = length(bulk_list), ncol = length(celltypes),
+                    dimnames = list(paste0("pseudobulk_", seq_along(bulk_list)), celltypes))
+  for (i in seq_along(bulk_list)) {
+    tr <- trimData(sig, bulk_list[[i]])
+    sol <- tryCatch({
+      if (nrow(tr$sig) < 2 || ncol(tr$sig) < 2 || length(tr$bulk) < 2) {
+        stop("Too little data after trimData().")
+      }
+      capture.output(ans <- solveDampenedWLS(tr$sig, tr$bulk))
+      ans
+    }, error = function(e) {
+      warning(sprintf("[%s] pseudobulk %d failed: %s", method_label, i, conditionMessage(e)))
+      NULL
+    })
+    if (!is.null(sol)) {
+      sol <- as.numeric(sol)
+      names(sol) <- colnames(tr$sig)
+      sol[!is.finite(sol)] <- 0
+      sol[sol < 0] <- 0
+      if (sum(sol) > 0) sol <- sol / sum(sol)
+      results[i, intersect(names(sol), celltypes)] <- sol[intersect(names(sol), celltypes)]
+      results[i, is.na(results[i, ])] <- 0
+    }
+  }
+  results
+}
+
+compute_comparison <- function(truth, pred_default, pred_custom,
+                               default_name, custom_name, out_dir) {
+  n_bulk <- nrow(truth)
+  bulk_metrics <- map_dfr(seq_len(n_bulk), function(i) {
+    bind_rows(
+      metric_summary(truth[i, ], pred_default[i, ]) %>%
+        mutate(Method = default_name, Bulk = i),
+      metric_summary(truth[i, ], pred_custom[i, ]) %>%
+        mutate(Method = custom_name, Bulk = i)
+    )
+  })
+  ct_metrics <- bind_rows(
+    celltype_metrics(truth, pred_default, default_name),
+    celltype_metrics(truth, pred_custom, custom_name)
+  )
+
+  metric_names <- c("Pearson", "Spearman", "CCC", "RMSE", "MAE")
+  stat_results <- map_dfr(metric_names, function(m) {
+    def <- bulk_metrics %>% filter(Method == default_name) %>% pull(all_of(m))
+    cus <- bulk_metrics %>% filter(Method == custom_name) %>% pull(all_of(m))
+    keep <- is.finite(def) & is.finite(cus)
+    def2 <- def[keep]
+    cus2 <- cus[keep]
+    tt <- tryCatch(t.test(cus2, def2, paired = TRUE), error = function(e) NULL)
+    wt <- tryCatch(wilcox.test(cus2, def2, paired = TRUE, exact = FALSE), error = function(e) NULL)
+    bci <- boot_diff_ci(cus2, def2)
+    tibble(
+      Metric = m,
+      Mean_Default = mean(def2, na.rm = TRUE),
+      Mean_ClustoCell = mean(cus2, na.rm = TRUE),
+      Diff_Mean = bci$Mean,
+      CI_Lower = bci$Lower,
+      CI_Upper = bci$Upper,
+      t_pvalue = if (is.null(tt)) NA_real_ else tt$p.value,
+      wilcox_pvalue = if (is.null(wt)) NA_real_ else wt$p.value
+    )
+  })
+
+  write.csv(bulk_metrics, file.path(out_dir, "metrics_per_bulk.csv"), row.names = FALSE)
+  write.csv(ct_metrics, file.path(out_dir, "metrics_per_celltype.csv"), row.names = FALSE)
+  write.csv(stat_results, file.path(out_dir, "paired_statistics.csv"), row.names = FALSE)
+
+  list(bulk_metrics = bulk_metrics, ct_metrics = ct_metrics,
+       stat_results = stat_results)
+}
+
+make_comparison_plots <- function(result, default_name, custom_name, algorithm_label,
+                                  out_dir) {
+  bulk_metrics <- result$bulk_metrics
+  stats <- result$stat_results %>%
+    mutate(
+      Metric = factor(Metric, levels = c("RMSE", "MAE", "CCC", "Pearson", "Spearman")),
+      Label = case_when(
+        wilcox_pvalue < 0.001 ~ "***",
+        wilcox_pvalue < 0.01 ~ "**",
+        wilcox_pvalue < 0.05 ~ "*",
+        TRUE ~ "ns"
+      )
+    )
+
+  p_forest <- ggplot(stats, aes(x = Diff_Mean, y = Metric)) +
+    geom_vline(xintercept = 0, linetype = 2, colour = "grey60") +
+    geom_errorbarh(aes(xmin = CI_Lower, xmax = CI_Upper), height = 0.18, linewidth = 0.5) +
+    geom_point(size = 1.2) +
+    geom_text(aes(label = Label, x = CI_Upper), nudge_x = 0.01, size = 2.5) +
+    coord_flip() +
+    labs(x = paste0("Mean(ClustoCell − ", algorithm_label, ")"), y = NULL) +
+    theme_classic(base_size = 7) +
+    theme(axis.text.x = element_text(angle = 25, vjust = 0.8))
+
+  method_cols <- setNames(c("#E69F00", "#56B4E9"), c(default_name, custom_name))
+  p_rmse <- ggplot(bulk_metrics, aes(x = Method, y = RMSE, group = Bulk)) +
+    geom_line(colour = "grey65", alpha = 0.3) +
+    geom_point(aes(fill = Method), shape = 21, size = 1.5, stroke = 0.3) +
+    scale_fill_manual(values = method_cols) +
+    labs(x = NULL, y = "RMSE") +
+    theme_classic(base_size = 7) +
+    theme(legend.position = "none", axis.text.x = element_text(angle = 25, vjust = 0.68))
+
+  p_ccc <- ggplot(bulk_metrics, aes(x = Method, y = CCC, group = Bulk)) +
+    geom_line(colour = "grey65", alpha = 0.3) +
+    geom_point(aes(fill = Method), shape = 21, size = 1.5, stroke = 0.3) +
+    scale_fill_manual(values = method_cols) +
+    labs(x = NULL, y = "CCC") +
+    theme_classic(base_size = 7) +
+    theme(legend.position = "none", axis.text.x = element_text(angle = 25, vjust = 0.68))
+
+  combined <- p_forest / (p_rmse | p_ccc) + plot_layout(heights = c(1.15, 1))
+  ggsave(file.path(out_dir, "benchmark_summary.pdf"), combined,
+         width = 7.2, height = 5.2, device = cairo_pdf)
+  ggsave(file.path(out_dir, "benchmark_summary.png"), combined,
+         width = 7.2, height = 5.2, dpi = 600)
+  list(forest = p_forest, rmse = p_rmse, ccc = p_ccc, combined = combined)
+}
+
+# -------------------------- 4. BAYESPRISM HELPERS -------------------------------
+prepare_bp_default <- function(sc_dat, labels) {
+  sc_filt <- BayesPrism::cleanup.genes(
+    input = sc_dat,
+    input.type = "count.matrix",
+    species = SPECIES,
+    gene.group = c("Rb", "Mrp", "other_Rb", "chrM", "MALAT1", "chrX", "chrY"),
+    exp.cells = EXP_CELLS
+  )
+  sc_pc <- BayesPrism::select.gene.type(sc_filt, gene.type = "protein_coding")
+  keep <- colSums(sc_pc > 0) > 3
+  stat <- BayesPrism::get.exp.stat(
+    sc.dat = sc_pc[, keep, drop = FALSE],
+    cell.type.labels = labels,
+    cell.state.labels = labels,
+    pseudo.count = PSEUDO_COUNT,
+    cell.count.cutoff = CELL_COUNT_CUT,
+    n.cores = N_CORES
+  )
+  BayesPrism::select.marker(sc.dat = sc_pc, stat = stat,
+                            pval.max = PVAL_MAX, lfc.min = LFC_MIN)
+}
+
+prepare_bp_custom <- function(sc_dat, markers_list, celltypes) {
+  genes <- unique(unlist(markers_list[celltypes], use.names = FALSE))
+  genes <- intersect(genes, colnames(sc_dat))
+  if (length(genes) < 2) stop("Too few ClustoCell markers in BayesPrism reference.")
+  sc_dat[, genes, drop = FALSE]
+}
+
+run_bp <- function(ref_mat, labels, bulk_mat, celltypes, method_label, result_file) {
+  shared <- intersect(colnames(ref_mat), colnames(bulk_mat))
+  if (length(shared) < 2) stop("Too few shared genes for ", method_label)
+  ref_mat <- ref_mat[, shared, drop = FALSE]
+  bulk_mat <- bulk_mat[, shared, drop = FALSE]
+  prism <- BayesPrism::new.prism(
+    reference = ref_mat,
+    mixture = bulk_mat,
+    input.type = "count.matrix",
+    cell.type.labels = labels,
+    cell.state.labels = labels,
+    key = NULL,
+    outlier.cut = OUTLIER_CUT,
+    outlier.fraction = OUTLIER_FRAC
+  )
+  set.seed(SEED_BP)
+  fit <- BayesPrism::run.prism(prism = prism, n.cores = N_CORES)
+  saveRDS(fit, result_file)
+  theta <- BayesPrism::get.fraction(fit, which.theta = "final", state.or.type = "type")
+  pred <- matrix(0, nrow = nrow(bulk_mat), ncol = length(celltypes),
+                 dimnames = list(rownames(bulk_mat), celltypes))
+  common <- intersect(colnames(theta), celltypes)
+  pred[rownames(theta), common] <- theta[, common, drop = FALSE]
+  pred
+}
+
+# ----------------------- 5. GENERIC DATASET BENCHMARK ---------------------------
+run_dataset_benchmark <- function(dataset_name,
+                                  reference_obj,
+                                  reference_label_col,
+                                  query_obj,
+                                  query_label_col,
+                                  markers_list,
+                                  output_root) {
+  out_dataset <- file.path(output_root, dataset_name)
+  out_dwls <- file.path(out_dataset, "DWLS")
+  out_bp <- file.path(out_dataset, "BayesPrism")
+  dir.create(out_dwls, recursive = TRUE, showWarnings = FALSE)
+  if (RUN_BAYESPRISM) dir.create(out_bp, recursive = TRUE, showWarnings = FALSE)
+
+  ref_counts <- get_counts(reference_obj)
+  qry_counts <- get_counts(query_obj)
+  ref_labels <- clean_labels(reference_obj[[reference_label_col, drop = TRUE]])
+  qry_labels <- clean_labels(query_obj[[query_label_col, drop = TRUE]])
+  names(ref_labels) <- colnames(ref_counts)
+  names(qry_labels) <- colnames(qry_counts)
+
+  # Use only classes present in both datasets and represented by marker lists.
+  celltypes <- sort(Reduce(intersect, list(
+    unique(ref_labels[!is.na(ref_labels)]),
+    unique(qry_labels[!is.na(qry_labels)]),
+    names(markers_list)
+  )))
+  if (length(celltypes) < 2) stop(dataset_name, ": fewer than two shared classes.")
+
+  cat("\n", strrep("=", 78), "\n", dataset_name, "\n", sep = "")
+  cat("Benchmark classes: ", paste(celltypes, collapse = ", "), "\n", sep = "")
+  cat("Reference counts:\n")
+  print(table(factor(ref_labels, levels = celltypes), useNA = "ifany"))
+  cat("Query counts:\n")
+  print(table(factor(qry_labels, levels = celltypes), useNA = "ifany"))
+
+  markers_list <- restrict_marker_list(markers_list, celltypes, rownames(ref_counts))
+  marker_summary <- tibble(
+    CellType = celltypes,
+    N_requested = lengths(markers_list[celltypes]),
+    N_in_reference = lengths(markers_list[celltypes]),
+    Markers = vapply(markers_list[celltypes], paste, collapse = ";", FUN.VALUE = character(1))
+  )
+  write.csv(marker_summary, file.path(out_dataset, "clustocell_marker_summary.csv"), row.names = FALSE)
+
+  pb <- make_pseudobulks(qry_counts, qry_labels, celltypes)
+  truth <- pb$truth
+  bulk_list <- pb$bulk_list
+  saveRDS(list(truth = truth, bulk_list = bulk_list, celltypes = celltypes),
+          file.path(out_dataset, "pseudobulks_and_truth.rds"))
+
+  # DWLS
+  cat("Building default DWLS signature...\n")
+  sig_default <- build_signature_default(reference_obj, reference_label_col, celltypes)
+  cat("Default signature: ", nrow(sig_default), " genes x ", ncol(sig_default),
+      " classes; optimal G = ", attr(sig_default, "optimal_G"), "\n", sep = "")
+  cat("Building ClustoCell DWLS signature...\n")
+  sig_custom <- build_signature_clustocell(ref_counts, ref_labels, markers_list, celltypes)
+  write.csv(sig_default, file.path(out_dwls, "signature_default.csv"))
+  write.csv(sig_custom, file.path(out_dwls, "signature_clustocell.csv"))
+
+  pred_default <- safe_deconvolve_dwls(sig_default, bulk_list, celltypes, "DWLS")
+  pred_custom <- safe_deconvolve_dwls(sig_custom, bulk_list, celltypes, "ClustoCell-DWLS")
+  saveRDS(list(truth = truth, DWLS = pred_default, ClustoCell_DWLS = pred_custom),
+          file.path(out_dwls, "deconvolution_predictions.rds"))
+  dwls_result <- compute_comparison(truth, pred_default, pred_custom,
+                                    "DWLS", "ClustoCell-DWLS", out_dwls)
+  dwls_plots <- make_comparison_plots(dwls_result, "DWLS", "ClustoCell-DWLS",
+                                      "DWLS", out_dwls)
+
+  bp_result <- NULL
+  bp_plots <- NULL
+  if (RUN_BAYESPRISM) {
+    cat("Preparing BayesPrism matrices...\n")
+    keep_ref <- ref_labels %in% celltypes
+    sc_dat <- as.matrix(Matrix::t(ref_counts[, keep_ref, drop = FALSE]))
+    bp_labels <- ref_labels[keep_ref]
+    stopifnot(nrow(sc_dat) == length(bp_labels))
+    bulk_mat <- do.call(rbind, bulk_list)
+    rownames(bulk_mat) <- rownames(truth)
+    storage.mode(bulk_mat) <- "double"
+
+    cat("Running default BayesPrism arm...\n")
+    bp_ref_default <- prepare_bp_default(sc_dat, bp_labels)
+    writeLines(colnames(bp_ref_default), file.path(out_bp, "markers_default.txt"))
+    bp_pred_default <- run_bp(bp_ref_default, bp_labels, bulk_mat, celltypes,
+                              "BayesPrism", file.path(out_bp, "bp_default_fit.rds"))
+
+    cat("Running ClustoCell BayesPrism arm...\n")
+    bp_ref_custom <- prepare_bp_custom(sc_dat, markers_list, celltypes)
+    writeLines(colnames(bp_ref_custom), file.path(out_bp, "markers_clustocell.txt"))
+    bp_pred_custom <- run_bp(bp_ref_custom, bp_labels, bulk_mat, celltypes,
+                             "ClustoCell-BayesPrism",
+                             file.path(out_bp, "bp_clustocell_fit.rds"))
+
+    saveRDS(list(truth = truth, BayesPrism = bp_pred_default,
+                 ClustoCell_BayesPrism = bp_pred_custom),
+            file.path(out_bp, "deconvolution_predictions.rds"))
+    bp_result <- compute_comparison(truth, bp_pred_default, bp_pred_custom,
+                                    "BayesPrism", "ClustoCell-BayesPrism", out_bp)
+    bp_plots <- make_comparison_plots(bp_result, "BayesPrism",
+                                      "ClustoCell-BayesPrism", "BayesPrism", out_bp)
+  }
+
+  saveRDS(list(celltypes = celltypes, DWLS = dwls_result, BayesPrism = bp_result),
+          file.path(out_dataset, "benchmark_results.rds"))
+  invisible(list(celltypes = celltypes, DWLS = dwls_result,
+                 DWLS_plots = dwls_plots, BayesPrism = bp_result,
+                 BayesPrism_plots = bp_plots))
+}
+
+```
+
+### Liver prep
+
+```{r}
+
+# ==============================================================================
+# 6. LIVER LABEL MAPPING AND MARKERS
+# ==============================================================================
+liver_map <- c(
+  "alpha-beta_T_Cells"            = "Lymphocyte",
+  "Central_venous_LSECs"         = "Endothelial",
+  "Cholangiocytes"               = "Cholangiocyte",
+  "Erythroid_Cells"              = NA_character_,
+  "gamma-delta_T_Cells_1"        = "Lymphocyte",
+  "gamma-delta_T_Cells_2"        = "Lymphocyte",
+  "Hepatic_Stellate_Cells"       = "SMC",
+  "Hepatocyte_1"                 = "Hepatocyte",
+  "Hepatocyte_2"                 = "Hepatocyte",
+  "Hepatocyte_3"                 = "Hepatocyte",
+  "Hepatocyte_4"                 = "Hepatocyte",
+  "Hepatocyte_5"                 = "Hepatocyte",
+  "Hepatocyte_6"                 = "Hepatocyte",
+  "Inflammatory_Macrophage"      = "Myeloid",
+  "Mature_B_Cells"               = "Lymphocyte",
+  "NK-like_Cells"                = "Lymphocyte",
+  "Non-inflammatory_Macrophage"  = "Myeloid",
+  "Periportal_LSECs"             = "Endothelial",
+  "Plasma_Cells"                 = "Lymphocyte",
+  "Portal_endothelial_Cells"     = "Endothelial"
+)
+
+GSE115469_so$benchmark_celltype <- unname(liver_map[as.character(GSE115469_so$CellType)])
+cat("\nGSE115469 liver mapping:\n")
+print(table(GSE115469_so$CellType, GSE115469_so$benchmark_celltype, useNA = "always"))
+
+# Remove only genuinely unmatched cells (Erythroid_Cells).
+GSE115469_so_benchmark <- subset(
+  GSE115469_so,
+  cells = colnames(GSE115469_so)[!is.na(GSE115469_so$benchmark_celltype)]
+)
+
+liver_markers <- extract_top_clustocell_markers(
+  liver_tumor_adj_manual_annot_markoClust,
+  top_n = TOP_N
+)
+# Marker-list names are expected to equal the six liver_tumor_adj labels.
+liver_allowed <- c("Cholangiocyte", "Endothelial", "Hepatocyte",
+                   "Lymphocyte", "Myeloid", "SMC")
+liver_markers <- liver_markers[intersect(liver_allowed, names(liver_markers))]
+
+```
+
+### Prostate prep
+
+```{r}
+
+# ==============================================================================
+# 7. PROSTATE LABEL MAPPING AND HARMONIZED REFERENCE (GSE185344)
+# ==============================================================================
+
+prostate_query_map <- c(
+  "B cells"                    = "B",
+  "Basal cells"                = "BE",
+  "Ciliated cells"             = NA_character_,
+  "Endothelial cells"          = "Endothelial",
+  "Epithelial cells"           = "LE",
+  "Fibroblasts"                = "Fibroblast",
+  "Macrophages"                = "MNP",
+  "Mast cells"                 = "Mast",
+  "NK cells"                   = "NK",
+  "Olfactory epithelial cells" = NA_character_,
+  "Schwann cells"              = NA_character_,
+  "Smooth muscle cells"        = NA_character_,
+  "T cells"                    = "T"
+)
+
+GSE185344_so$benchmark_celltype <- unname(
+  prostate_query_map[
+    as.character(GSE185344_so$cellactivity_clusters)
+  ]
+)
+
+cat("\nGSE185344 prostate mapping:\n")
+
+print(
+  table(
+    GSE185344_so$cellactivity_clusters,
+    GSE185344_so$benchmark_celltype,
+    useNA = "always"
+  )
+)
+
+# Remove only unmatched cell types
+GSE185344_so_benchmark <- subset(
+  GSE185344_so,
+  cells = colnames(GSE185344_so)[
+    !is.na(GSE185344_so$benchmark_celltype)
+  ]
+)
+
+# ------------------------------------------------------------------------------
+# Harmonize the Prostate Cell Atlas reference labels to the same resolution
+# ------------------------------------------------------------------------------
+
+prostate_ref_map <- c(
+  "B"           = "B",
+  "BE"          = "BE",
+  "CE"          = NA_character_,
+  "Endothelial" = "Endothelial",
+  "Fibroblast"  = "Fibroblast",
+  "HE"          = NA_character_,
+  "LE"          = "LE",
+  "Mast"        = "Mast",
+  "MNP"         = "MNP",
+  "NK"          = "NK",
+  "Sperm"       = NA_character_,
+  "T"           = "T"
+)
+
+prostateimmuneatlas$benchmark_celltype <- unname(
+  prostate_ref_map[
+    as.character(prostateimmuneatlas$manual_annot)
+  ]
+)
+
+cat("\nProstate Cell Atlas reference harmonization:\n")
+
+print(
+  table(
+    prostateimmuneatlas$manual_annot,
+    prostateimmuneatlas$benchmark_celltype,
+    useNA = "always"
+  )
+)
+
+prostateimmuneatlas_benchmark <- subset(
+  prostateimmuneatlas,
+  cells = colnames(prostateimmuneatlas)[
+    !is.na(prostateimmuneatlas$benchmark_celltype)
+  ]
+)
+
+# ------------------------------------------------------------------------------
+# ClustoCell markers
+# ------------------------------------------------------------------------------
+
+prostate_markers_original <- extract_top_clustocell_markers(
+  prostateimmuneatlas_manual_annot_markoClust,
+  top_n = TOP_N
+)
+
+# Merge BE, CE, HE and LE markers into one epithelial marker list
+prostate_markers <- combine_marker_classes(
+  prostate_markers_original,
+  prostate_ref_map
+)
+
+```
+
+### Run benchmarking
+
+```{r}
+
+# ==============================================================================
+# 8. RUN BOTH DATASET BENCHMARKS
+# ==============================================================================
+liver_benchmark_results <- run_dataset_benchmark(
+  dataset_name = "Liver_GSE115469",
+  reference_obj = liver_tumor_adj,
+  reference_label_col = "minor_manual_annot1",
+  query_obj = GSE115469_so_benchmark,
+  query_label_col = "benchmark_celltype",
+  markers_list = liver_markers,
+  output_root = BASE_OUT_DIR
+)
+
+saveRDS(liver_benchmark_results, "../../../Benchmarking/Deconvolution/Liver_Prostate/Liver_GSE115469/liver_benchmark_results.rds")
+
+liver_benchmark_results <- readRDS("../../../Benchmarking/Deconvolution/Liver_Prostate/Liver_GSE115469/liver_benchmark_results.rds")
+
+liver_BayesPrism_p_forest <- liver_benchmark_results$BayesPrism_plots$forest + 
+  labs(tag = "a") + theme(plot.tag = element_text(size = 7, face = "bold"))
+
+liver_BayesPrism_p_ccc <- liver_benchmark_results$BayesPrism_plots$ccc + 
+  labs(tag = "b") + theme(plot.tag = element_text(size = 7, face = "bold"))
+
+liver_BayesPrism_p_rmse <- liver_benchmark_results$BayesPrism_plots$rmse + 
+  labs(tag = "c") + theme(plot.tag = element_text(size = 7, face = "bold"))
+
+#__________
+
+liver_DWLS_p_forest <- liver_benchmark_results$DWLS_plots$forest + 
+  labs(tag = "d") + theme(plot.tag = element_text(size = 7, face = "bold"))
+
+liver_DWLS_p_ccc <- liver_benchmark_results$DWLS_plots$ccc + 
+  labs(tag = "e") + theme(plot.tag = element_text(size = 7, face = "bold"))
+
+liver_DWLS_p_rmse <- liver_benchmark_results$DWLS_plots$rmse + 
+  labs(tag = "f") + theme(plot.tag = element_text(size = 7, face = "bold"))
+
+deconv_liver_row_combined <- 
+  (liver_BayesPrism_p_forest + 
+  liver_BayesPrism_p_ccc + 
+  liver_BayesPrism_p_rmse) /
+  (liver_DWLS_p_forest + 
+  liver_DWLS_p_ccc + 
+  liver_DWLS_p_rmse)
+
+#______________________________________________
+
+prostate_benchmark_results <- run_dataset_benchmark(
+  dataset_name = "Prostate_GSE185344",
+  reference_obj = prostateimmuneatlas_benchmark,
+  reference_label_col = "benchmark_celltype",
+  query_obj = GSE185344_so_benchmark,
+  query_label_col = "benchmark_celltype",
+  markers_list = prostate_markers,
+  output_root = BASE_OUT_DIR
+)
+
+saveRDS(
+  prostate_benchmark_results,
+  "../../../Benchmarking/Deconvolution/Liver_Prostate/Prostate_GSE185344/prostate_benchmark_results.rds"
+)
+
+prostate_benchmark_results <- readRDS("../../../Benchmarking/Deconvolution/Liver_Prostate/Prostate_GSE185344/prostate_benchmark_results.rds")
+
+prostate_BayesPrism_p_forest <- prostate_benchmark_results$BayesPrism_plots$forest + 
+  labs(tag = "g") + theme(plot.tag = element_text(size = 7, face = "bold"))
+
+prostate_BayesPrism_p_ccc <- prostate_benchmark_results$BayesPrism_plots$ccc + 
+  labs(tag = "h") + theme(plot.tag = element_text(size = 7, face = "bold"))
+
+prostate_BayesPrism_p_rmse <- prostate_benchmark_results$BayesPrism_plots$rmse + 
+  labs(tag = "i") + theme(plot.tag = element_text(size = 7, face = "bold"))
+
+#__________
+
+prostate_DWLS_p_forest <- prostate_benchmark_results$DWLS_plots$forest + 
+  labs(tag = "j") + theme(plot.tag = element_text(size = 7, face = "bold"))
+
+prostate_DWLS_p_ccc <- prostate_benchmark_results$DWLS_plots$ccc + 
+  labs(tag = "k") + theme(plot.tag = element_text(size = 7, face = "bold"))
+
+prostate_DWLS_p_rmse <- prostate_benchmark_results$DWLS_plots$rmse + 
+  labs(tag = "l") + theme(plot.tag = element_text(size = 7, face = "bold"))
+
+deconv_prostate_row_combined <- 
+  (prostate_BayesPrism_p_forest + 
+     prostate_BayesPrism_p_ccc + 
+     prostate_BayesPrism_p_rmse) /
+  (prostate_DWLS_p_forest + 
+     prostate_DWLS_p_ccc + 
+     prostate_DWLS_p_rmse)
+
+
+```
+
+# Combine the plots
+
+```{r}
+
+deconv_comb_plt <- (wrap_elements(deconv_liver_row_combined) / wrap_elements(deconv_prostate_row_combined)) & theme(plot.margin = margin(0, 0, 0, 0))
+
+ggsave(filename = "../../../Testing results/deconv_comb_plt.pdf", 
+       plot = deconv_comb_plt, 
+       device = "pdf", 
+       width = 6.85, height = 1.762*5, units = "in")
+
+```
+

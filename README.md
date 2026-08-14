@@ -1,2 +1,345 @@
-# CelliVerse-Project
-Files and resources used and generated in the CelliVerse project.
+
+<!-- README.md is generated from README.Rmd. Please edit that file -->
+
+# CelliVerse Project
+
+<!-- badges: start -->
+
+[![CelliVerse R
+package](https://img.shields.io/badge/CelliVerse-R%20package-276DC3)](https://github.com/asalavaty/celliverse)
+[![CRAN](https://www.r-pkg.org/badges/version/celliverse?color=blue)](https://cran.r-project.org/package=celliverse)
+[![Zenodo](https://img.shields.io/badge/Zenodo-10.5281%2Fzenodo.20550512-1682D4)](https://doi.org/10.5281/zenodo.20550512)
+[![Hugging Face
+Space](https://img.shields.io/badge/🤗%20Hugging%20Face-Space-yellow)](https://huggingface.co/spaces/asalavaty/celliverse)
+
+<!-- badges: end -->
+
+## Overview
+
+This repository accompanies the **ClustoCell** study and contains
+resources required to reproduce the analyses and figures presented in
+the manuscript.
+
+It provides:
+
+- the prepared **CelliVerse MarkerDB** resources used for cell-type
+  annotation;
+- human and mouse positive and negative marker databases in both dense
+  and sparse formats;
+- analysis scripts used to generate the main, extended data, and
+  supplementary figures presented in the study; and
+- links to the `celliverse` R package and the publicly available
+  datasets used in the analyses.
+
+The associated [`celliverse`](https://github.com/asalavaty/celliverse) R
+package provides the implementations of **ClustoCell**, marker
+identification and evaluation methods, cell-type annotation workflows,
+visualization functions, and related tools used throughout the study.
+
+------------------------------------------------------------------------
+
+## Repository structure
+
+``` text
+CelliVerse-Project/
+│
+├── Marker Database/
+│   ├── human_pos_marker_db.rds
+│   ├── human_pos_marker_sparse_db.rds
+│   ├── human_neg_marker_db.rds
+│   ├── human_neg_marker_sparse_db.rds
+│   ├── mouse_pos_marker_db.rds
+│   ├── mouse_pos_marker_sparse_db.rds
+│   ├── mouse_neg_marker_db.rds
+│   └── mouse_neg_marker_sparse_db.rds
+│
+├── Scripts/
+│   ├── Figures/
+│   │   ├── Figure 2.Rmd
+│   │   ├── Figure 3.Rmd
+│   │   ├── Figure 4.Rmd
+│   │   ├── Figure 5.Rmd
+│   │   └── Figure 6.Rmd
+│   │
+│   ├── Extended Data Figures/
+│   │   ├── Extended Data Figure 1.Rmd
+│   │   ├── Extended Data Figure 2.Rmd
+│   │   ├── Extended Data Figure 3.Rmd
+│   │   └── Extended Data Figure 4.Rmd
+│   │
+│   └── Supplementary Figures/
+│       ├── Supplementary Figure 1.Rmd
+│       ├── ...
+│       ├── Supplementary Figure 22.Rmd
+│       ├── Supplementary Figure 23-24.Rmd
+│       └── Supplementary Figure 25.Rmd
+│
+├── LICENSE
+└── README.md
+```
+
+------------------------------------------------------------------------
+
+## CelliVerse MarkerDB
+
+The **CelliVerse MarkerDB** is a harmonized cell-type marker resource
+used by `celliverse` for marker-based cell-type annotation.
+
+This repository provides the prepared marker databases used in the study
+separately for:
+
+| Species | Marker type | Dense | Sparse |
+|:---|:---|:---|:---|
+| Human | Positive | `human_pos_marker_db.rds` | `human_pos_marker_sparse_db.rds` |
+| Human | Negative | `human_neg_marker_db.rds` | `human_neg_marker_sparse_db.rds` |
+| Mouse | Positive | `mouse_pos_marker_db.rds` | `mouse_pos_marker_sparse_db.rds` |
+| Mouse | Negative | `mouse_neg_marker_db.rds` | `mouse_neg_marker_sparse_db.rds` |
+
+The same MarkerDB is also distributed as the `markerDB` data object
+within the [`celliverse`](https://github.com/asalavaty/celliverse) R
+package.
+
+All publicly available marker resources and the HGNC gene nomenclature
+database used to construct the CelliVerse MarkerDB are reported in
+**Supplementary Data 1** of the manuscript.
+
+### Loading a database
+
+For example:
+
+``` r
+human_pos_marker_db <- readRDS(
+  "Marker Database/human_pos_marker_db.rds"
+)
+
+human_pos_marker_sparse_db <- readRDS(
+  "Marker Database/human_pos_marker_sparse_db.rds"
+)
+```
+
+------------------------------------------------------------------------
+
+## Reproducing manuscript analyses
+
+The `Scripts` directory contains the R Markdown workflows used to
+generate the figures presented in the manuscript.
+
+Scripts are organized according to their corresponding manuscript
+figure.
+
+### Main figures
+
+``` text
+Scripts/Figures/
+```
+
+contains the analysis workflows for **Figures 2–6**.
+
+### Extended Data figures
+
+``` text
+Scripts/Extended Data Figures/
+```
+
+contains the workflows for **Extended Data Figures 1–4**.
+
+### Supplementary figures
+
+``` text
+Scripts/Supplementary Figures/
+```
+
+contains the workflows for **Supplementary Figures 1–25**.
+
+Each `.Rmd` file contains the analysis and visualization code
+corresponding to the indicated figure.
+
+> **Note:** Some analyses are computationally intensive and may require
+> substantial memory and runtime depending on the dataset and hardware.
+> Scripts are provided to enable transparent inspection and reproduction
+> of the analyses reported in the manuscript.
+
+------------------------------------------------------------------------
+
+## Data availability
+
+All publicly available bulk and single-cell RNA-seq datasets analyzed in
+the study are listed in **Supplementary Data 4** of the manuscript.
+
+For reproducibility and long-term accessibility, the datasets used in
+the analyses are additionally archived on Zenodo:
+
+**DOI:**
+[10.5281/zenodo.20550512](https://doi.org/10.5281/zenodo.20550512)
+
+The datasets are not duplicated in this GitHub repository because of
+their size. They can be obtained from their original public repositories
+or from the Zenodo archive above.
+
+------------------------------------------------------------------------
+
+## Installing CelliVerse
+
+The analyses in this repository use functions implemented in the
+`celliverse` R package.
+
+The current CRAN release can be installed using:
+
+``` r
+install.packages("celliverse")
+```
+
+The development version can be installed directly from GitHub:
+
+``` r
+# install.packages("remotes")
+remotes::install_github(
+  "asalavaty/celliverse",
+  build_vignettes = TRUE
+)
+```
+
+For complete package documentation, examples, and tutorials, see:
+
+- [CelliVerse GitHub
+  repository](https://github.com/asalavaty/celliverse)
+- [CelliVerse CRAN page](https://cran.r-project.org/package=celliverse)
+- [CelliVerse
+  vignette](https://cran.r-project.org/web/packages/celliverse/vignettes/Introduction-to-CelliVerse.html)
+
+------------------------------------------------------------------------
+
+## ClustoCell
+
+**ClustoCell** is implemented within the `celliverse` R package and
+provides a data-driven framework for single-cell clustering and marker
+identification.
+
+The package integrates ClustoCell with complementary functionality for:
+
+- cluster and sub-cluster marker identification;
+- positive and negative marker discovery;
+- marker purity assessment;
+- dataset-level feature selection;
+- cell-type annotation using the CelliVerse MarkerDB;
+- LLM-assisted cell-type annotation;
+- generation of portable LLM annotation prompts; and
+- visualization and downstream integration of clustering and annotation
+  results.
+
+A lightweight browser-based demonstration of ClustoCell outputs is also
+available through the [CelliVerse Hugging Face
+Space](https://huggingface.co/spaces/asalavaty/celliverse).
+
+------------------------------------------------------------------------
+
+## CelliVerse Agent
+
+The `celliverse` package also includes an **LLM-powered CelliVerse
+Agent** that provides a natural-language interface to CelliVerse
+functionality.
+
+The Agent enables users to interact with their single-cell datasets and
+request CelliVerse analyses, including application of ClustoCell,
+through conversational instructions. This provides a convenient route
+for researchers who wish to use CelliVerse without directly writing R
+code.
+
+The Agent supports both cloud-based language models and local models
+through providers such as Ollama and LM Studio. Full setup and usage
+instructions are provided in the [`celliverse`
+vignette](https://cran.r-project.org/web/packages/celliverse/vignettes/Introduction-to-CelliVerse.html).
+
+------------------------------------------------------------------------
+
+## Interactive demonstration
+
+A lightweight browser-based demonstration of selected CelliVerse
+functionality is available through Hugging Face Spaces:
+
+[![Open CelliVerse
+Demo](https://img.shields.io/badge/🤗-Open%20CelliVerse%20Demo-FFD21E?style=for-the-badge)](https://huggingface.co/spaces/asalavaty/celliverse)
+
+The demo provides an interactive ClustoCell PBMC3K example using
+precomputed outputs, allowing users to explore UMAP visualizations,
+clusters, sub-clusters, and marker results without installing the
+package locally.
+
+------------------------------------------------------------------------
+
+## Reproducibility
+
+To reproduce a particular manuscript result:
+
+1.  Install the required version of `celliverse` and any additional R
+    packages used by the corresponding script.
+2.  Obtain the required dataset from its original source or the [Zenodo
+    archive](https://doi.org/10.5281/zenodo.20550512).
+3.  Open the appropriate `.Rmd` file under `Scripts/`.
+4.  Update local data paths where required.
+5.  Run the analysis sections of the script to reproduce the
+    corresponding results and figure.
+
+Because individual scripts may use different public datasets and
+analysis-specific dependencies, the required inputs and processing steps
+should be followed directly from the corresponding figure workflow.
+
+------------------------------------------------------------------------
+
+## Related resources
+
+| Resource | Location |
+|:---|:---|
+| CelliVerse R package | [github.com/asalavaty/celliverse](https://github.com/asalavaty/celliverse) |
+| CRAN package | [cran.r-project.org/package=celliverse](https://cran.r-project.org/package=celliverse) |
+| Manuscript analysis repository | [github.com/asalavaty/CelliVerse-Project](https://github.com/asalavaty/CelliVerse-Project) |
+| Archived study datasets | [Zenodo: 10.5281/zenodo.20550512](https://doi.org/10.5281/zenodo.20550512) |
+| Interactive ClustoCell demo | [Hugging Face Space](https://huggingface.co/spaces/asalavaty/celliverse) |
+| Package vignette | [CelliVerse vignette](https://cran.r-project.org/web/packages/celliverse/vignettes/Introduction-to-CelliVerse.html) |
+
+------------------------------------------------------------------------
+
+## Citation
+
+If you use **ClustoCell**, **CelliVerse MarkerDB**, the `celliverse`
+package, or resources from this repository, please cite the associated
+CelliVerse/ClustoCell publication.
+
+The full citation will be added upon publication.
+
+Citation information for the R package can also be accessed directly
+from R:
+
+``` r
+citation("celliverse")
+```
+
+------------------------------------------------------------------------
+
+## Author
+
+The CelliVerse project and `celliverse` R package were developed by
+[Adrian Salavaty](https://asalavaty.com/).
+
+### Advisor
+
+- Ramyar Molania
+
+------------------------------------------------------------------------
+
+## License
+
+Please see the [`LICENSE`](LICENSE) file in this repository for
+licensing information.
+
+------------------------------------------------------------------------
+
+## Issues and questions
+
+For issues related to the **CelliVerse R package**, please use the
+[`celliverse` issue
+tracker](https://github.com/asalavaty/celliverse/issues).
+
+For questions specifically related to the manuscript reproduction
+scripts or resources contained in this repository, please open an issue
+in this repository.

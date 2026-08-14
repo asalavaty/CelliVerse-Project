@@ -1,0 +1,800 @@
+---
+title: "Evaluating ClustoCell's Performance in grouping cells into celltype-relevant clusters"
+author: "Adrian Salavaty"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(pROC)
+library(umap)
+library(cluster)
+library(ggplot2)
+library(dplyr)
+library(splatter)
+library(Seurat)
+library(tidyverse)
+library(scplotter)
+library(scran)
+library(scater)
+library(Matrix)
+library(SeuratDisk)
+library(hdf5r)
+library(patchwork)
+library(paletteer)
+library(hrbrthemes)
+library(cellmarkeraccordion)
+library(HGNChelper)
+library(openxlsx)
+library(Festem)
+library(SCINA)
+library(AUCell)
+library(UCell)
+library(bench)
+
+```
+
+# Introduction
+
+Script for evaluation of ClustoCell's Performance in grouping cells into celltype-relevant clusters.
+
+# Function Defintion
+
+We first define some helper functions.
+
+```{r}
+
+# Personalized Theme function
+
+styled_theme <- function(
+  style = c("academic", "minimal", "modern", "dark", "classic", "void"),
+  border_mode = c("default", "all", "none"),
+  title_align = c("center", "left", "right"),
+  legends_to_drop = NULL,
+  axes_title_drop = FALSE,
+  legend_position = c("default", "top", "bottom", "left", "right", "inside"),
+  axis_title_face = c("regular", "bold"),
+  x_axis_text_angle = 45,
+  x_axis_text_y = -0.3,
+  remove_margin = c("none", "bottom", "all", "top", "left", "right")
+) {
+  style <- match.arg(style)
+  border_mode <- match.arg(border_mode)
+  title_align <- match.arg(title_align)
+  legend_position <- match.arg(legend_position)
+  axis_title_face <- match.arg(axis_title_face)
+  remove_margin <- match.arg(remove_margin)
+
+  base_font <- "Helvetica"
+  align_map <- c(left = 0, center = 0.5, right = 1)
+  hjust_val <- align_map[title_align]
+  thin_size <- 0.3  
+
+  # Decide axis title face
+  axis_face_val <- ifelse(axis_title_face == "bold", "bold", "plain")
+
+  # Base theme selection
+  if (style == "void") {
+    theme_out <- theme_classic(base_size = 13, base_family = base_font) +
+      theme(
+        axis.title.x = element_blank(),  
+        axis.title.y = element_blank(),  
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "academic") {
+    theme_out <- theme_minimal(base_size = 14, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 16, hjust = hjust_val),
+        plot.subtitle = element_text(size = 13, hjust = hjust_val, color = "grey30"),
+        plot.caption = element_text(size = 10, hjust = 1, color = "grey40"),
+        axis.title = element_text(face = axis_face_val, size = 13),
+        axis.text = element_text(size = 12, color = "black"),
+        panel.grid.major = element_line(color = "grey80", size = thin_size),
+        panel.grid.minor = element_blank(),
+        legend.position = "right",
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "minimal") {
+    theme_out <- theme_minimal(base_size = 13, base_family = base_font) +
+      theme(
+        panel.grid = element_blank(),
+        axis.line = element_line(color = "black", size = thin_size),
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.text = element_text(color = "black"),
+        axis.title = element_text(face = axis_face_val),
+        legend.position = "none",
+        legend.title = element_text(face = "italic")
+      )
+  } else if (style == "modern") {
+    theme_out <- theme_light(base_size = 13, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(color = "grey80", linetype = "dashed", size = thin_size),
+        panel.grid.minor = element_blank(),
+        legend.position = "bottom",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "dark") {
+    theme_out <- theme_minimal(base_size = 13, base_family = base_font) +
+      theme(
+        plot.background = element_rect(fill = "black", color = NA),
+        panel.background = element_rect(fill = "black", color = NA),
+        panel.grid.major = element_line(color = "grey30", size = thin_size),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, color = "white", hjust = hjust_val),
+        plot.subtitle = element_text(color = "grey80", hjust = hjust_val),
+        axis.text = element_text(color = "white"),
+        axis.title = element_text(color = "white", face = axis_face_val),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.text = element_text(color = "white"),
+        legend.title = element_text(color = "white", face = "italic"),
+        axis.line = element_line(color = "white", size = thin_size)
+      )
+  } else if (style == "classic") {
+    theme_out <- theme_classic(base_size = 13, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  }
+
+  # Apply border mode
+  if (border_mode == "all") {
+    theme_out <- theme_out + theme(panel.border = element_rect(color = "black", fill = NA, size = thin_size))
+  } else if (border_mode == "none") {
+    theme_out <- theme_out + theme(panel.border = element_blank(), axis.line = element_blank())
+  }
+
+  # Drop axes titles if requested
+  if (axes_title_drop) {
+    theme_out <- theme_out + theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+  }
+
+  # Override x-axis text angle and vertical position
+  theme_out <- theme_out + theme(
+    axis.text.x = element_text(
+      angle = x_axis_text_angle,
+      vjust = 1,
+      hjust = 1,
+      margin = margin(t = x_axis_text_y)
+    )
+  )
+
+  # Handle margin removal
+  if (remove_margin == "all") {
+    theme_out <- theme_out + theme(plot.margin = margin(0, 0, 0, 0))
+  } else if (remove_margin == "top") {
+    theme_out <- theme_out + theme(plot.margin = margin(t = 0))
+  } else if (remove_margin == "bottom") {
+    theme_out <- theme_out + theme(plot.margin = margin(b = 0))
+  } else if (remove_margin == "left") {
+    theme_out <- theme_out + theme(plot.margin = margin(l = 0))
+  } else if (remove_margin == "right") {
+    theme_out <- theme_out + theme(plot.margin = margin(r = 0))
+  }
+  # if "none", do nothing
+
+  # Legend positioning override
+  if (legend_position != "default") {
+    if (legend_position == "inside") {
+      theme_out <- theme_out + theme(
+        legend.position = c(0.98, 0.98),
+        legend.justification = c("right", "top"),
+        legend.direction = "vertical"
+      )
+    } else {
+      horiz <- legend_position %in% c("top", "bottom")
+      theme_out <- theme_out + theme(
+        legend.position = legend_position,
+        legend.direction = if (horiz) "horizontal" else "vertical"
+      )
+    }
+  }
+
+  # Return theme + guides if needed
+  if (!is.null(legends_to_drop)) {
+    drop_list <- lapply(legends_to_drop, function(x) "none")
+    names(drop_list) <- legends_to_drop
+    return(list(theme_out, guides(.list = drop_list)))
+  } else {
+    return(theme_out)
+  }
+}
+
+#____________
+
+# Label plot
+label_plt <- function(label = "Label", size = 1) {
+  ggplot(data.frame(x = 1, y = 1), aes(x = x, y = y)) +
+    # Draw a single vertical bar
+    geom_col(width = 0.6, fill = "lightgrey", color = "black") +
+    # Add vertical text (angle=90)
+    annotate("text", x = 1, y = 0.5, label = label, size = size,
+             angle = 90, size = 6, vjust = 0.5, hjust = 0.5) +
+    # Remove all extra space
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0), limits = c(0, 1)) +
+    theme_void(base_size = 14) +             # no axes, ticks, labels
+    theme(
+        # plot.margin = margin(0, 0, 0, 0),      # remove outside margins
+        panel.spacing = unit(0, "pt"),         # remove panel padding
+        plot.background = element_blank(),     # no background
+        panel.background = element_blank()
+    )
+}
+
+#____________________________
+
+# Benchmarking speed
+
+run_with_bench <- function(fun, memlog = "memlog.out") {
+  # fun: a function with no arguments, OR an expression wrapped in a function
+  # memlog: file to store Rprofmem output
+  
+  # Start memory profiling
+  Rprofmem(memlog)
+  
+  # Measure time + capture result
+  timing <- system.time({
+    result_obj <- fun()
+  })
+  
+  # Stop memory profiling
+  Rprofmem(NULL)
+  
+  # Read memory log
+  mem_lines <- readLines(memlog, warn = FALSE)
+  
+  # Extract numeric byte counts
+  mem_bytes <- suppressWarnings(
+    sum(as.numeric(gsub("[^0-9]", "", mem_lines)), na.rm = TRUE)
+  )
+  
+  # Return everything in a clean object
+  return(list(
+    result = result_obj,
+    time   = timing,
+    mem_bytes = mem_bytes
+  ))
+}
+
+#_______________________________________________________
+
+# Min-Max Normalize function
+min_max_norm <- function(x) {
+  min_val <- min(x)
+  max_val <- max(x)
+  if (max_val > min_val) {
+    return((x - min_val) / (max_val - min_val))
+  } else {
+    return(rep(0, length(x)))
+  }
+}
+
+#______________________
+
+# Create a custom formatter for bolding only Avg.[Score] in the heatmap plots
+bold_labeller <- function(x) {
+  sapply(x, function(val) {
+    if (val == "Median Score") {
+      # Bold using plotmath
+      return(expression(bold("Median Score")))
+    } else {
+      # Normal label, but still parsed for superscripts etc
+      return(val)
+    }
+  })
+}
+
+
+```
+
+
+```{r}
+
+# Concordance = 100*Sum(rowMax)/N
+
+library(paletteer)
+
+paste(as.vector(col2rgb("#0000CCFF")), collapse = " ")
+
+# https://pmassicotte.github.io/paletteer_gallery/
+
+paletteer::paletteer_d("MetBrewer::Austria", 7)
+#A40000FF #16317DFF #007E2FFF #FFCD12FF #B86092FF #721B3EFF #00B7A7FF 
+
+plotthis::palette_list %>% names()
+
+# Best pals from ggsci: pal_npg (10), pal_d3 (10), pal_ucscgb (26), pal_igv (51)
+
+# "#FF0000FF" "#FF9900FF" "#FFCC00FF" "#00FF00FF" "#6699FFFF" "#CC33FFFF" "#99991EFF" "#999999FF" "#FF00CCFF" "#CC0000FF" "#FFCCCCFF" "#FFFF00FF" "#CCFF00FF" "#358000FF" "#0000CCFF" "#99CCFFFF" "#00FFFFFF"
+# "#CCFFFFFF" "#9900CCFF" "#CC99FFFF" "#996600FF" "#666600FF" "#666666FF" "#CCCCCCFF" "#79CC3DFF" "#CCCC99FF"
+
+# "#1F77B4FF" "#FF7F0EFF" "#2CA02CFF" "#D62728FF" "#9467BDFF" "#8C564BFF" "#E377C2FF" "#7F7F7FFF" "#BCBD22FF" "#17BECFFF"
+
+# NPG colors:
+# "#E64B35FF" "#4DBBD5FF" "#00A087FF" "#3C5488FF" "#F39B7FFF" "#8491B4FF" "#91D1C2FF" "#DC0000FF" "#7E6148FF" "#B09C85FF"
+
+# "#5050FFFF" "#CE3D32FF" "#749B58FF" "#F0E685FF" "#466983FF" "#BA6338FF" "#5DB1DDFF" "#802268FF" "#6BD76BFF" "#D595A7FF" "#924822FF" "#837B8DFF" "#C75127FF" "#D58F5CFF" "#7A65A5FF" "#E4AF69FF" "#3B1B53FF"
+# "#CDDEB7FF" "#612A79FF" "#AE1F63FF" "#E7C76FFF" "#5A655EFF" "#CC9900FF" "#99CC00FF" "#A9A9A9FF" "#CC9900FF" "#99CC00FF" "#33CC00FF" "#00CC33FF" "#00CC99FF" "#0099CCFF" "#0A47FFFF" "#4775FFFF" "#FFC20AFF"
+# "#FFD147FF" "#990033FF" "#991A00FF" "#996600FF" "#809900FF" "#339900FF" "#00991AFF" "#009966FF" "#008099FF" "#003399FF" "#1A0099FF" "#660099FF" "#990080FF" "#D60047FF" "#FF1463FF" "#00D68FFF"
+
+ # "#5050FFFF" "#CE3D32FF" "#749B58FF" "#F0E685FF" "#466983FF" "#BA6338FF" "#5DB1DDFF" "#802268FF" "#6BD76BFF" "#D595A7FF"
+
+# Define the color palettes
+
+npg_pal <- ggsci::pal_npg()(10)
+npg_reverse_pal <- rev(ggsci::pal_npg("nrc")(10))
+
+```
+
+A function for converting count df to sparse matrix
+
+```{r}
+
+library(Rcpp)
+library(RcppArmadillo)
+
+Rcpp::sourceCpp(code = '
+#define ARMA_64BIT_WORD 1
+#include <RcppArmadillo.h>
+// [[Rcpp::depends(RcppArmadillo)]]
+
+// [[Rcpp::export]]
+Rcpp::S4 denseToSparse(Rcpp::DataFrame& df) {  // Pass by reference to allow in-place modification
+  int nrows = df.nrows();
+  int ncols = df.size();
+
+  arma::sp_mat sparse(nrows, ncols);
+
+  for (int col = 0; col < ncols; ++col) {
+    arma::vec this_col = Rcpp::as<arma::vec>(df[col]);  // Wrap without copying
+    sparse.col(col) = this_col;  // Assigns only non-zeros to sparse
+    df[col] = R_NilValue;  // Free the column memory progressively
+  }
+
+  return Rcpp::wrap(sparse);  // Returns as dgCMatrix S4 object
+}
+')
+
+```
+
+# Data preparation
+
+```{r}
+
+human_melanocyte_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/Human melanocyte/human_melanocyte_so_for_clustering_bench.qs2")
+
+```
+
+# UMAP visualization
+
+```{r}
+
+original_annot_umap <- CellDimPlot(human_melanocyte_so, reduction = "umap", group_by = "class_1", 
+                                  label = F, pt_size = 2.6, 
+                                  xlab = "", ylab = "", raster = T,
+                                  legend.position = "right", legend.direction = "vertical", palette = "seurat") +
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme_void() +
+  theme(
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    panel.border = element_blank(),
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # plot.margin = margin(t = 0, r = 0, b = 5, l = -50),
+    plot.subtitle = element_text(size = 7, hjust = 0.05),
+    # legend.margin = margin(t = 0, r = 0, b = 5, l = -5),
+    legend.box.margin = margin(0, 0, 0, 5),
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 4.5),
+    legend.key.width = unit(0, "pt"),
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt")
+  ) +
+  labs(subtitle = "Original Manual Annotations", 
+       color = NULL, x = NULL, y = NULL, tag = "a") +
+  guides(color = guide_legend(ncol = 2, bycol = T, override.aes = list(size = 2)))
+
+#______________________
+
+ClustoCell_umap <- CellDimPlot(human_melanocyte_so, reduction = "umap", group_by = "ClustoCell", 
+                                  label = F, pt_size = 2.6, 
+                                  xlab = "", ylab = "", raster = T,
+                                  legend.position = "right", legend.direction = "vertical", palette = "igv") +
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme_void() +
+  theme(
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    panel.border = element_blank(),
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # plot.margin = margin(t = 0, r = 0, b = 5, l = -50),
+    plot.subtitle = element_text(size = 7, hjust = 0.05),
+    # legend.margin = margin(t = 0, r = 0, b = 5, l = -5),
+    legend.box.margin = margin(0, 0, 0, 5),
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 4.5),
+    legend.key.width = unit(0, "pt"),
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt"),
+    legend.position = ifelse(length(unique(human_melanocyte_so$ClustoCell)) > 20, "none", "right")
+  ) +
+  labs(subtitle = "ClustoCell", 
+       color = NULL, x = NULL, y = NULL, tag = "b") +
+  guides(color = guide_legend(ncol = 2, bycol = T, override.aes = list(size = 2)))
+
+#______________________
+
+AUCell_umap <- CellDimPlot(human_melanocyte_so, reduction = "umap", group_by = "AUCell", 
+                                  label = F, pt_size = 2.6, 
+                                  xlab = "", ylab = "", raster = T,
+                                  legend.position = "right", legend.direction = "vertical", palette = "igv") +
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme_void() +
+  theme(
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    panel.border = element_blank(),
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # plot.margin = margin(t = 0, r = 0, b = 5, l = -50),
+    plot.subtitle = element_text(size = 7, hjust = 0.05),
+    # legend.margin = margin(t = 0, r = 0, b = 5, l = -5),
+    legend.box.margin = margin(0, 0, 0, 5),
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 4.5),
+    legend.key.width = unit(0, "pt"),
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt"),
+    legend.position = ifelse(length(unique(human_melanocyte_so$AUCell)) > 20, "none", "right")
+  ) +
+  labs(subtitle = "AUCell", 
+       color = NULL, x = NULL, y = NULL, tag = "c") +
+  guides(color = guide_legend(ncol = 2, bycol = T, override.aes = list(size = 2)))
+
+#______________________
+
+scType_umap <- CellDimPlot(human_melanocyte_so, reduction = "umap", group_by = "scType", 
+                                  label = F, pt_size = 2.6, 
+                                  xlab = "", ylab = "", raster = T,
+                                  legend.position = "right", legend.direction = "vertical", palette = "igv") +
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme_void() +
+  theme(
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    panel.border = element_blank(),
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # plot.margin = margin(t = 0, r = 0, b = 5, l = -50),
+    plot.subtitle = element_text(size = 7, hjust = 0.05),
+    # legend.margin = margin(t = 0, r = 0, b = 5, l = -5),
+    legend.box.margin = margin(0, 0, 0, 5),
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 4.5),
+    legend.key.width = unit(0, "pt"),
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt"),
+    legend.position = ifelse(length(unique(human_melanocyte_so$scType)) > 20, "none", "right")
+  ) +
+  labs(subtitle = "scType", 
+       color = NULL, x = NULL, y = NULL, tag = "d") +
+  guides(color = guide_legend(ncol = 2, bycol = T, override.aes = list(size = 2)))
+
+#______________________
+
+SCINA_umap <- CellDimPlot(human_melanocyte_so, reduction = "umap", group_by = "SCINA", 
+                                  label = F, pt_size = 2.6, 
+                                  xlab = "", ylab = "", raster = T,
+                                  legend.position = "right", legend.direction = "vertical", palette = "igv") +
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme_void() +
+  theme(
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    panel.border = element_blank(),
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # plot.margin = margin(t = 0, r = 0, b = 5, l = -50),
+    plot.subtitle = element_text(size = 7, hjust = 0.05),
+    # legend.margin = margin(t = 0, r = 0, b = 5, l = -5),
+    legend.box.margin = margin(0, 0, 0, 5),
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 4.5),
+    legend.key.width = unit(0, "pt"),
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt"),
+    legend.position = ifelse(length(unique(human_melanocyte_so$SCINA)) > 20, "none", "right")
+  ) +
+  labs(subtitle = "SCINA", 
+       color = NULL, x = NULL, y = NULL, tag = "e") +
+  guides(color = guide_legend(ncol = 2, bycol = T, override.aes = list(size = 2)))
+
+#______________________
+
+Accordion_umap <- CellDimPlot(human_melanocyte_so, reduction = "umap", group_by = "accordion", 
+                                  label = F, pt_size = 2.6, 
+                                  xlab = "", ylab = "", raster = T,
+                                  legend.position = "right", legend.direction = "vertical", palette = "igv") +
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme_void() +
+  theme(
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    panel.border = element_blank(),
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # plot.margin = margin(t = 0, r = 0, b = 5, l = -50),
+    plot.subtitle = element_text(size = 7, hjust = 0.05),
+    # legend.margin = margin(t = 0, r = 0, b = 5, l = -5),
+    legend.box.margin = margin(0, 0, 0, 5),
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 4.5),
+    legend.key.width = unit(0, "pt"),
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt"),
+    legend.position = ifelse(length(unique(human_melanocyte_so$accordion)) > 20, "none", "right")
+  ) +
+  labs(subtitle = "Accordion", 
+       color = NULL, x = NULL, y = NULL, tag = "f") +
+  guides(color = guide_legend(ncol = 2, bycol = T, override.aes = list(size = 2)))
+
+#______________________
+
+UCell_umap <- CellDimPlot(human_melanocyte_so, reduction = "umap", group_by = "UCell", 
+                                  label = F, pt_size = 2.6, 
+                                  xlab = "", ylab = "", raster = T,
+                                  legend.position = "right", legend.direction = "vertical", palette = "igv") +
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme_void() +
+  theme(
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    panel.border = element_blank(),
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # plot.margin = margin(t = 0, r = 0, b = 5, l = -50),
+    plot.subtitle = element_text(size = 7, hjust = 0.05),
+    # legend.margin = margin(t = 0, r = 0, b = 5, l = -5),
+    legend.box.margin = margin(0, 0, 0, 5),
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 4.5),
+    legend.key.width = unit(0, "pt"),
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt"),
+    legend.position = ifelse(length(unique(human_melanocyte_so$UCell)) > 20, "none", "right")
+  ) +
+  labs(subtitle = "UCell", 
+       color = NULL, x = NULL, y = NULL, tag = "g") +
+  guides(color = guide_legend(ncol = 2, bycol = T, override.aes = list(size = 2)))
+
+#______________________
+
+Scanpy_umap <- CellDimPlot(human_melanocyte_so, reduction = "umap", group_by = "Scanpy", 
+                                  label = F, pt_size = 2.6, 
+                                  xlab = "", ylab = "", raster = T,
+                                  legend.position = "right", legend.direction = "vertical", palette = "igv") +
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme_void() +
+  theme(
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    panel.border = element_blank(),
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # plot.margin = margin(t = 0, r = 0, b = 5, l = -50),
+    plot.subtitle = element_text(size = 7, hjust = 0.05),
+    # legend.margin = margin(t = 0, r = 0, b = 5, l = -5),
+    legend.box.margin = margin(0, 0, 0, 5),
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 4.5),
+    legend.key.width = unit(0, "pt"),
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt"),
+    legend.position = ifelse(length(unique(human_melanocyte_so$Scanpy)) > 20, "none", "right")
+  ) +
+  labs(subtitle = "Scanpy", 
+       color = NULL, x = NULL, y = NULL, tag = "h") +
+  guides(color = guide_legend(ncol = 2, bycol = T, override.aes = list(size = 2)))
+
+#______________________
+
+seurat_umap <- CellDimPlot(human_melanocyte_so, reduction = "umap", group_by = "seurat_clusters", 
+                                  label = F, pt_size = 2.6, 
+                                  xlab = "", ylab = "", raster = T,
+                                  legend.position = "right", legend.direction = "vertical", palette = "igv") +
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme_void() +
+  theme(
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    panel.border = element_blank(),
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # plot.margin = margin(t = 0, r = 0, b = 5, l = -50),
+    plot.subtitle = element_text(size = 7, hjust = 0.05),
+    # legend.margin = margin(t = 0, r = 0, b = 5, l = -5),
+    legend.box.margin = margin(0, 0, 0, 5),
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 4.5),
+    legend.key.width = unit(0, "pt"),
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt"),
+    legend.position = ifelse(length(unique(human_melanocyte_so$seurat_clusters)) > 20, "none", "right")
+  ) +
+  labs(subtitle = "Seurat", 
+       color = NULL, x = NULL, y = NULL, tag = "i") +
+  guides(color = guide_legend(ncol = 2, bycol = T, override.aes = list(size = 2)))
+
+#______________________
+
+Scran_umap <- CellDimPlot(human_melanocyte_so, reduction = "umap", group_by = "Scran", 
+                                  label = F, pt_size = 2.6, 
+                                  xlab = "", ylab = "", raster = T,
+                                  legend.position = "right", legend.direction = "vertical", palette = "igv") +
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme_void() +
+  theme(
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    panel.border = element_blank(),
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # plot.margin = margin(t = 0, r = 0, b = 5, l = -50),
+    plot.subtitle = element_text(size = 7, hjust = 0.05),
+    # legend.margin = margin(t = 0, r = 0, b = 5, l = -5),
+    legend.box.margin = margin(0, 0, 0, 5),
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 4.5),
+    legend.key.width = unit(0, "pt"),
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt"),
+    legend.position = ifelse(length(unique(human_melanocyte_so$Scran)) > 20, "none", "right")
+  ) +
+  labs(subtitle = "Scran", 
+       color = NULL, x = NULL, y = NULL, tag = "j") +
+  guides(color = guide_legend(ncol = 2, bycol = T, override.aes = list(size = 2)))
+
+#______________________
+
+scGPT_umap <- CellDimPlot(human_melanocyte_so, reduction = "umap", group_by = "scGPT", 
+                          label = F, pt_size = 2.6, 
+                          xlab = "", ylab = "", raster = T,
+                          legend.position = "right", legend.direction = "vertical", palette = "igv") +
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme_void() +
+  theme(
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    panel.border = element_blank(),
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # plot.margin = margin(t = 0, r = 0, b = 5, l = -50),
+    plot.subtitle = element_text(size = 7, hjust = 0.05),
+    # legend.margin = margin(t = 0, r = 0, b = 5, l = -5),
+    legend.box.margin = margin(0, 0, 0, 5),
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 4.5),
+    legend.key.width = unit(0, "pt"),
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt"),
+    legend.position = ifelse(length(unique(human_melanocyte_so$scGPT)) > 20, "none", "right")
+  ) +
+  labs(subtitle = "scGPT", 
+       color = NULL, x = NULL, y = NULL, tag = "k") +
+  guides(color = guide_legend(ncol = 2, bycol = T, override.aes = list(size = 2)))
+
+
+```
+
+# Combining UMAPs
+
+```{r}
+
+combined_human_melanocyte_so_umaps <- wrap_plots(
+  wrap_elements(original_annot_umap),
+  wrap_elements(ClustoCell_umap),
+  wrap_elements(AUCell_umap),
+  wrap_elements(scType_umap),
+  wrap_elements(SCINA_umap),
+  wrap_elements(Accordion_umap),
+  wrap_elements(UCell_umap),
+  wrap_elements(Scanpy_umap),
+  wrap_elements(seurat_umap),
+  wrap_elements(Scran_umap) + wrap_elements(scGPT_umap),
+  nrow = 5
+) & theme(plot.margin = margin(0, 0, 0, 0))
+
+combined_human_melanocyte_so_umaps <- wrap_elements(combined_human_melanocyte_so_umaps) + 
+  # ggtitle("Supplementary Figure 5: UMAP Plots of Melanocyte−Melanoma Dataset (legends with > 20 clusters are not shown)\nColored by Original Manual Annotations and Ten Clustering and Cell Labeling Methods") +
+  theme(plot.title = element_text(size = 8))
+
+ggsave(filename = "../../../Testing results/combined_human_melanocyte_so_umaps.pdf", 
+       plot = combined_human_melanocyte_so_umaps, 
+       device = "pdf", width = 6.85, 
+       height = (1.762)*5, units = "in")
+
+```
+

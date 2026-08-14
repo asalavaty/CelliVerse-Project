@@ -1,0 +1,1027 @@
+---
+title: "Evaluating ClustoCell's Performance on sketched large datasets"
+author: "Adrian Salavaty"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(pROC)
+library(umap)
+library(cluster)
+library(ggplot2)
+library(dplyr)
+library(splatter)
+library(Seurat)
+library(tidyverse)
+library(scplotter)
+library(scran)
+library(scater)
+library(Matrix)
+library(SeuratDisk)
+library(hdf5r)
+library(patchwork)
+library(paletteer)
+library(hrbrthemes)
+library(reticulate)
+
+```
+
+# Introduction
+
+Script for evaluation of ClustoCell's Performance on sketched large datasets.
+
+# Function Defintion
+
+We first define some helper functions.
+
+```{r}
+
+# Personalized Theme function
+
+styled_theme <- function(
+  style = c("academic", "minimal", "modern", "dark", "classic", "void"),
+  border_mode = c("default", "all", "none"),
+  title_align = c("center", "left", "right"),
+  legends_to_drop = NULL,
+  axes_title_drop = FALSE,
+  legend_position = c("default", "top", "bottom", "left", "right", "inside"),
+  axis_title_face = c("regular", "bold"),
+  x_axis_text_angle = 45,
+  x_axis_text_y = -0.3,
+  remove_margin = c("none", "bottom", "all", "top", "left", "right")
+) {
+  style <- match.arg(style)
+  border_mode <- match.arg(border_mode)
+  title_align <- match.arg(title_align)
+  legend_position <- match.arg(legend_position)
+  axis_title_face <- match.arg(axis_title_face)
+  remove_margin <- match.arg(remove_margin)
+
+  base_font <- "Helvetica"
+  align_map <- c(left = 0, center = 0.5, right = 1)
+  hjust_val <- align_map[title_align]
+  thin_size <- 0.3  
+
+  # Decide axis title face
+  axis_face_val <- ifelse(axis_title_face == "bold", "bold", "plain")
+
+  # Base theme selection
+  if (style == "void") {
+    theme_out <- theme_classic(base_size = 13, base_family = base_font) +
+      theme(
+        axis.title.x = element_blank(),  
+        axis.title.y = element_blank(),  
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "academic") {
+    theme_out <- theme_minimal(base_size = 14, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 16, hjust = hjust_val),
+        plot.subtitle = element_text(size = 13, hjust = hjust_val, color = "grey30"),
+        plot.caption = element_text(size = 10, hjust = 1, color = "grey40"),
+        axis.title = element_text(face = axis_face_val, size = 13),
+        axis.text = element_text(size = 12, color = "black"),
+        panel.grid.major = element_line(color = "grey80", size = thin_size),
+        panel.grid.minor = element_blank(),
+        legend.position = "right",
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "minimal") {
+    theme_out <- theme_minimal(base_size = 13, base_family = base_font) +
+      theme(
+        panel.grid = element_blank(),
+        axis.line = element_line(color = "black", size = thin_size),
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.text = element_text(color = "black"),
+        axis.title = element_text(face = axis_face_val),
+        legend.position = "none",
+        legend.title = element_text(face = "italic")
+      )
+  } else if (style == "modern") {
+    theme_out <- theme_light(base_size = 13, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(color = "grey80", linetype = "dashed", size = thin_size),
+        panel.grid.minor = element_blank(),
+        legend.position = "bottom",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "dark") {
+    theme_out <- theme_minimal(base_size = 13, base_family = base_font) +
+      theme(
+        plot.background = element_rect(fill = "black", color = NA),
+        panel.background = element_rect(fill = "black", color = NA),
+        panel.grid.major = element_line(color = "grey30", size = thin_size),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, color = "white", hjust = hjust_val),
+        plot.subtitle = element_text(color = "grey80", hjust = hjust_val),
+        axis.text = element_text(color = "white"),
+        axis.title = element_text(color = "white", face = axis_face_val),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.text = element_text(color = "white"),
+        legend.title = element_text(color = "white", face = "italic"),
+        axis.line = element_line(color = "white", size = thin_size)
+      )
+  } else if (style == "classic") {
+    theme_out <- theme_classic(base_size = 13, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  }
+
+  # Apply border mode
+  if (border_mode == "all") {
+    theme_out <- theme_out + theme(panel.border = element_rect(color = "black", fill = NA, size = thin_size))
+  } else if (border_mode == "none") {
+    theme_out <- theme_out + theme(panel.border = element_blank(), axis.line = element_blank())
+  }
+
+  # Drop axes titles if requested
+  if (axes_title_drop) {
+    theme_out <- theme_out + theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+  }
+
+  # Override x-axis text angle and vertical position
+  theme_out <- theme_out + theme(
+    axis.text.x = element_text(
+      angle = x_axis_text_angle,
+      vjust = 1,
+      hjust = 1,
+      margin = margin(t = x_axis_text_y)
+    )
+  )
+
+  # Handle margin removal
+  if (remove_margin == "all") {
+    theme_out <- theme_out + theme(plot.margin = margin(0, 0, 0, 0))
+  } else if (remove_margin == "top") {
+    theme_out <- theme_out + theme(plot.margin = margin(t = 0))
+  } else if (remove_margin == "bottom") {
+    theme_out <- theme_out + theme(plot.margin = margin(b = 0))
+  } else if (remove_margin == "left") {
+    theme_out <- theme_out + theme(plot.margin = margin(l = 0))
+  } else if (remove_margin == "right") {
+    theme_out <- theme_out + theme(plot.margin = margin(r = 0))
+  }
+  # if "none", do nothing
+
+  # Legend positioning override
+  if (legend_position != "default") {
+    if (legend_position == "inside") {
+      theme_out <- theme_out + theme(
+        legend.position = c(0.98, 0.98),
+        legend.justification = c("right", "top"),
+        legend.direction = "vertical"
+      )
+    } else {
+      horiz <- legend_position %in% c("top", "bottom")
+      theme_out <- theme_out + theme(
+        legend.position = legend_position,
+        legend.direction = if (horiz) "horizontal" else "vertical"
+      )
+    }
+  }
+
+  # Return theme + guides if needed
+  if (!is.null(legends_to_drop)) {
+    drop_list <- lapply(legends_to_drop, function(x) "none")
+    names(drop_list) <- legends_to_drop
+    return(list(theme_out, guides(.list = drop_list)))
+  } else {
+    return(theme_out)
+  }
+}
+
+#____________
+
+# Label plot
+label_plt <- function(label = "Label", size = 1) {
+  ggplot(data.frame(x = 1, y = 1), aes(x = x, y = y)) +
+    # Draw a single vertical bar
+    geom_col(width = 0.6, fill = "lightgrey", color = "black") +
+    # Add vertical text (angle=90)
+    annotate("text", x = 1, y = 0.5, label = label, size = size,
+             angle = 90, size = 6, vjust = 0.5, hjust = 0.5) +
+    # Remove all extra space
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0), limits = c(0, 1)) +
+    theme_void(base_size = 14) +             # no axes, ticks, labels
+    theme(
+        plot.margin = margin(0, 0, 0, 0),      # remove outside margins
+        panel.spacing = unit(0, "pt"),         # remove panel padding
+        plot.background = element_blank(),     # no background
+        panel.background = element_blank()
+    )
+}
+
+#____________
+
+# Function for calculating the dim reduction trustworthiness
+
+sklearn <- import("sklearn.manifold", convert = TRUE)
+
+compute_trust_sklearn <- function(X_high, X_low, k = 30L, nCells = 10000, seed = 121) {
+  
+  set.seed(seed)
+  idx <- sample(1:nrow(X_high), nCells)  # sample 10k cells
+  
+  X_high <- X_high[idx,]
+  X_low <- X_low[idx,]
+  
+  # convert to numeric matrices
+  X_high <- as.matrix(X_high)
+  X_low  <- as.matrix(X_low)
+  
+  sklearn$trustworthiness(X_high, X_low, n_neighbors = as.integer(k))
+}
+
+#____________
+
+# Custom number formatting function
+fmt_num <- function(x) {
+  sapply(x, function(v) {
+    if (is.na(v)) return(NA_character_)
+    if (abs(v) < 1) {
+      # Remove leading zero, keep up to 2 decimals
+      sub("^0", "", sprintf("%.2f", v))
+    } else {
+      # Keep one decimal place
+      sprintf("%.1f", v)
+    }
+  })
+}
+
+#____________
+
+# Custom number formatting function (3 decimals)
+fmt_num3 <- function(x) {
+  sapply(x, function(v) {
+    if (is.na(v)) return(NA_character_)
+    if (abs(v) < 1) {
+      # Remove leading zero, keep up to 2 decimals
+      sub("^0", "", sprintf("%.3f", v))
+    } else {
+      # Keep one decimal place
+      sprintf("%.1f", v)
+    }
+  })
+}
+
+```
+
+
+```{r}
+
+# Concordance = 100*Sum(rowMax)/N
+
+# https://pmassicotte.github.io/paletteer_gallery/
+
+paletteer_d("MetBrewer::Austria", 7)
+#A40000FF #16317DFF #007E2FFF #FFCD12FF #B86092FF #721B3EFF #00B7A7FF 
+
+paletteer_d("MetBrewer::Austria", 7)
+#A40000FF #16317DFF #007E2FFF #FFCD12FF #B86092FF #721B3EFF #00B7A7FF 
+
+plotthis::palette_list %>% names()
+
+# Best pals from ggsci: pal_npg (10), pal_d3 (10), pal_ucscgb (26), pal_igv (51)
+
+# "#FF0000FF" "#FF9900FF" "#FFCC00FF" "#00FF00FF" "#6699FFFF" "#CC33FFFF" "#99991EFF" "#999999FF" "#FF00CCFF" "#CC0000FF" "#FFCCCCFF" "#FFFF00FF" "#CCFF00FF" "#358000FF" "#0000CCFF" "#99CCFFFF" "#00FFFFFF"
+# "#CCFFFFFF" "#9900CCFF" "#CC99FFFF" "#996600FF" "#666600FF" "#666666FF" "#CCCCCCFF" "#79CC3DFF" "#CCCC99FF"
+
+# NPG colors:
+# "#E64B35FF" "#4DBBD5FF" "#00A087FF" "#3C5488FF" "#F39B7FFF" "#8491B4FF" "#91D1C2FF" "#DC0000FF" "#7E6148FF" "#B09C85FF"
+
+# "#5050FFFF" "#CE3D32FF" "#749B58FF" "#F0E685FF" "#466983FF" "#BA6338FF" "#5DB1DDFF" "#802268FF" "#6BD76BFF" "#D595A7FF" "#924822FF" "#837B8DFF" "#C75127FF" "#D58F5CFF" "#7A65A5FF" "#E4AF69FF" "#3B1B53FF"
+# "#CDDEB7FF" "#612A79FF" "#AE1F63FF" "#E7C76FFF" "#5A655EFF" "#CC9900FF" "#99CC00FF" "#A9A9A9FF" "#CC9900FF" "#99CC00FF" "#33CC00FF" "#00CC33FF" "#00CC99FF" "#0099CCFF" "#0A47FFFF" "#4775FFFF" "#FFC20AFF"
+# "#FFD147FF" "#990033FF" "#991A00FF" "#996600FF" "#809900FF" "#339900FF" "#00991AFF" "#009966FF" "#008099FF" "#003399FF" "#1A0099FF" "#660099FF" "#990080FF" "#D60047FF" "#FF1463FF" "#00D68FFF"
+
+ # "#5050FFFF" "#CE3D32FF" "#749B58FF" "#F0E685FF" "#466983FF" "#BA6338FF" "#5DB1DDFF" "#802268FF" "#6BD76BFF" "#D595A7FF"
+
+# Define the color palettes
+
+npg_pal <- ggsci::pal_npg()(10)
+npg_reverse_pal <- rev(ggsci::pal_npg("nrc")(10))
+
+```
+
+Concordance = 100*Sum(rowMax)/N
+
+# Human Colon Cancer Atlas (c295)
+
+## Data preparation
+
+The data was downloaded from https://singlecell.broadinstitute.org/single_cell/study/SCP1162/human-colon-cancer-atlas-c295?label=cB1%20%28B%20IGD%2BIgM%2B%29&cluster=All%20cells%20%28tSNE%29&spatialGroups=--&annotation=ClusterFull--group--cluster&subsample=all#study-summary
+
+```{r}
+
+hcca_data_dir <- "../../Benchmarking/Test Datasets/Human Colon Cancer Atlas (c295)/Dataset"
+
+# If you have features file
+hcca_features_file <- file.path(hcca_data_dir, "matrix.genes.tsv")
+hcca_barcodes_file <- file.path(hcca_data_dir, "matrix.barcodes.tsv")
+hcca_matrix_file <- file.path(hcca_data_dir, "matrix.mtx.gz")
+
+BPCells::import_matrix_market(
+  mtx_path = hcca_matrix_file,
+  outdir   = "../../Benchmarking/Test Datasets/Human Colon Cancer Atlas (c295)/Dataset/hcca_BPCells/",
+  row_names = readLines(hcca_features_file),
+  col_names = readLines(hcca_barcodes_file),
+  row_major = FALSE
+)
+
+#_________
+
+# Load the data (on disk) and create a Seurat object
+
+hcca_expr_matrix <- BPCells::open_matrix_dir(
+  "../../Benchmarking/Test Datasets/Human Colon Cancer Atlas (c295)/Dataset/hcca_BPCells/"
+)
+
+# Convert BPCells IterableMatrix to in-memory dgCMatrix
+hcca_expr_matrix <- as(hcca_expr_matrix, "dgCMatrix")
+
+# Check
+class(hcca_expr_matrix)
+qs2::qs_save(object = hcca_expr_matrix, file = "../../Benchmarking/Test Datasets/Human Colon Cancer Atlas (c295)/Dataset/hcca_dgCMatrix.qs2")
+# hcca_expr_matrix <- qs2::qs_read("../../Benchmarking/Test Datasets/Human Colon Cancer Atlas (c295)/Dataset/hcca_dgCMatrix.qs2")
+
+BPCells::write_matrix_dir(
+  mat = hcca_expr_matrix, 
+  dir = "../../Benchmarking/Test Datasets/Human Colon Cancer Atlas (c295)/Dataset/hcca_dgCMatrix_BPCells/"
+)
+
+#_____________________________________________
+
+hcca_expr_matrix <- BPCells::open_matrix_dir(
+  "../../Benchmarking/Test Datasets/Human Colon Cancer Atlas (c295)/Dataset/hcca_dgCMatrix_BPCells/"
+)
+
+hcca_so <- CreateSeuratObject(
+  counts = hcca_expr_matrix
+)
+
+hcca_metadata <- fread("../../Benchmarking/Test Datasets/Human Colon Cancer Atlas (c295)/Dataset/metatable_v3_fix_v3.tsv")
+hcca_metadata <- hcca_metadata[-1,]
+
+ncol(hcca_so) == nrow(hcca_metadata) # TRUE
+all(colnames(hcca_so) == hcca_metadata$NAME) # TRUE
+rownames(hcca_metadata) <- hcca_metadata$NAME
+
+# Add celltypes
+hcca_celltypes <- fread("../../Benchmarking/Test Datasets/Human Colon Cancer Atlas (c295)/Dataset/CellTypes/crc10x_tSNE_cl_global.tsv")[-1,]
+ncol(hcca_so) == nrow(hcca_celltypes) # TRUE
+all(colnames(hcca_so) == hcca_celltypes$NAME) # TRUE
+
+hcca_metadata <- left_join(hcca_metadata, hcca_celltypes)
+hcca_metadata$X <- NULL
+hcca_metadata$Y <- NULL
+
+hcca_so@meta.data <- hcca_metadata
+
+hcca_expr_matrix <- qs2::qs_read("../../Benchmarking/Test Datasets/Human Colon Cancer Atlas (c295)/Dataset/hcca_dgCMatrix.qs2")
+
+hcca_so[["RNA_dgCMatrix"]] <- CreateAssayObject(counts = hcca_expr_matrix)
+
+qs2::qs_save(object = hcca_so, file = "../../Benchmarking/Test Datasets/Human Colon Cancer Atlas (c295)/Dataset/hcca_so_plusRNA_dgCMatrix.qs2")
+
+# hcca_so <- qs2::qs_read("../../Benchmarking/Test Datasets/Human Colon Cancer Atlas (c295)/Dataset/hcca_so_plusRNA_dgCMatrix.qs2")
+# hcca_so <- qs2::qs_read("../../Benchmarking/Test Datasets/Human Colon Cancer Atlas (c295)/Dataset/hcca_so.qs2")
+
+```
+
+## Running ClustoCell
+
+```{r}
+
+hcca_so <- NormalizeData(hcca_so, normalization.method = "LogNormalize", scale.factor = 10000)
+hcca_so <- FindVariableFeatures(hcca_so, selection.method = "vst", nfeatures = 2000)
+
+set.seed(121) 
+hcca_so <- SketchData(
+  object = hcca_so,
+  assay = "RNA_dgCMatrix",
+  ncells = 20000,
+  method = "Uniform",
+  sketched.assay = "sketch", 
+  verbose = F
+)
+
+DefaultAssay(hcca_so) <- "sketch"
+hcca_so <- FindVariableFeatures(hcca_so, selection.method = "vst", nfeatures = 2000)
+hcca_so <- ScaleData(hcca_so, features = VariableFeatures(hcca_so))
+hcca_so <- RunPCA(hcca_so, features = VariableFeatures(object = hcca_so))
+
+hcca_ClustoCell <- clustoCell(data = hcca_so, assay = "sketch", 
+                              high_quantile = 0.25, low_quantile = 0.25, subset_to_HVG = F,
+                              identify_subclusters = F,
+                              seed = 121)
+
+hcca_ClustoCell <- clustoCell_TransferLabel(clustoCell = hcca_ClustoCell, 
+                                             query_expr_mat = hcca_so, assay = "RNA_dgCMatrix",
+                                             method = "seurat-project", dims = 20, seed = 121)
+
+qs2::qs_save(object = hcca_ClustoCell, file = "../../Benchmarking/Test Datasets/Human Colon Cancer Atlas (c295)/Dataset/hcca_ClustoCell.qs2")
+hcca_ClustoCell <- qs2::qs_read("../../Benchmarking/Test Datasets/Human Colon Cancer Atlas (c295)/Dataset/hcca_ClustoCell.qs2")
+
+hcca_so <- addClustoData(obj = hcca_so, clustoCell = hcca_ClustoCell, major_cluster_name = "ClustoCell", add_sub_clusters = FALSE)
+
+hcca_sketch_metadata <- hcca_so@meta.data
+qs2::qs_save(object = hcca_sketch_metadata, file = "../../Benchmarking/Test Datasets/Human Colon Cancer Atlas (c295)/Dataset/hcca_sketch_metadata.qs2")
+
+```
+
+## UMAP Plot
+
+```{r}
+
+# Dim plot using 2000 HVGs
+
+hcca_so <- NormalizeData(hcca_so, normalization.method = "LogNormalize", scale.factor = 10000)
+hcca_so <- FindVariableFeatures(hcca_so, selection.method = "vst", nfeatures = 2000)
+hcca_so <- ScaleData(hcca_so, features = VariableFeatures(hcca_so))
+hcca_so <- RunPCA(hcca_so, features = VariableFeatures(object = hcca_so))
+ElbowPlot(hcca_so, ndims = 50)
+hcca_so <- RunUMAP(hcca_so, dims = 1:20)
+
+qs2::qs_save(object = hcca_so, file = "../../Benchmarking/Test Datasets/Human Colon Cancer Atlas (c295)/Dataset/hcca_so.qs2")
+# hcca_so <- qs2::qs_read("../../Benchmarking/Test Datasets/Human Colon Cancer Atlas (c295)/Dataset/hcca_so.qs2")
+
+hcca_ClusterTop_umap <- CellDimPlot(hcca_so, reduction = "umap", group_by = "ClusterTop", 
+                                  label = F, pt_size = 0.000001, 
+                                  theme = "theme_blank", xlab = "", ylab = "", raster = T,
+                                  legend.position = "right", legend.direction = "vertical", palette = "npg") +
+  # Add coord_fixed to remove internal axis padding (no expansion around UMAP points)
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # NEW: Remove outer white space around entire plot (top, right, bottom, left)
+    plot.margin = margin(t = 0, r = 0, b = 5, l = -5),
+    plot.subtitle = element_text(size = 7, hjust = 0.05),
+    legend.margin = margin(t = 0, r = 0, b = 5, l = -5),      # Internal legend padding
+    legend.box.margin = margin(0, 0, 0, 5),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 4.5),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt")
+  ) +
+  labs(subtitle = paste0("N Cells: ", ncol(hcca_so)), 
+       color = NULL, x = NULL, y = NULL, tag = "a") +
+  guides(color = guide_legend(ncol = 2, bycol = T, override.aes = list(size = 2))) 
+
+```
+
+## Confusion Matrix
+
+```{r}
+
+library(scales)
+
+hcca_ClustoCell_vs_manual_annot <- table(ClustoCell = hcca_so$ClustoCell, manual_annot = hcca_so$ClusterTop)
+hcca_ClustoCell_vs_manual_annot_maxOverlap <- round(((hcca_ClustoCell_vs_manual_annot %>% apply(1, max) %>% sum())/ncol(hcca_so))*100)
+
+
+hcca_ClustoCell_vs_manual_annot <- as.data.frame(hcca_ClustoCell_vs_manual_annot)
+colnames(hcca_ClustoCell_vs_manual_annot) <- c("ClustoCell", "Manual Annotations", "Count")
+
+hcca_ClustoCell_vs_manual_annot_plt <- ggplot(hcca_ClustoCell_vs_manual_annot, 
+                                                    aes(x = `Manual Annotations`, 
+                                                        y = `ClustoCell`,  color = Count)) +
+  geom_point(size = log10(hcca_ClustoCell_vs_manual_annot$Count)/1.5) +
+  # geom_text(aes(label = Count)) +
+    scale_color_gradient(
+    low = "white", 
+    high = muted("#DC0000FF"),
+    labels = label_number(scale_cut = cut_short_scale(), accuracy = 1)
+  ) +
+  theme_minimal() +
+  labs(title = NULL,
+       subtitle = paste0("Concordance: ",
+                         hcca_ClustoCell_vs_manual_annot_maxOverlap,
+                         '%')) + 
+  styled_theme(legend_position = "right", style = "classic", title_align = "left", border_mode = "all", legends_to_drop = "size") +
+  theme(text = element_text(size = 7),
+        legend.margin = margin(2, 2, 2, 2),      # Internal legend padding
+        legend.box.margin = margin(t = 0, r = 0, b = 0, l = 5),  # External space to plot
+        legend.box.spacing = unit(1, "pt"),
+        title = element_text(size = 7),
+        axis.title = element_text(size = 7),
+        plot.tag = element_text(size = 7, face = "bold"),
+        legend.title = element_text(size = 5.5, margin = margin(b = 2)),
+        legend.key.width = unit(0.25, "cm"),
+        legend.key.height = unit(0.5, "cm")) +
+  labs(tag = "b") + guides(color = guide_colorbar(barheight = unit(1.5, "cm"), 
+                                                  barwidth = unit(0.2, "cm")))
+
+```
+
+## Combining the plots
+
+```{r}
+
+hcca_sketchPlots_combined <-
+    (hcca_ClusterTop_umap + 
+        hcca_ClustoCell_vs_manual_annot_plt +
+        plot_layout(widths = c(11, 9), heights = 1, guides = "keep"))
+
+
+ggsave(filename = "../../Testing results/hcca/Final/hcca_sketchPlots_combined.png", 
+       plot = hcca_sketchPlots_combined, device = "png", width = 6.85, height = (1.762)*1.3, units = "in", dpi = 300)
+
+ggsave(filename = "../../Testing results/hcca/Final/hcca_sketchPlots_combined.pdf", 
+       plot = hcca_sketchPlots_combined, device = "pdf", width = 6.85, height = (1.762)*1.3, units = "in", dpi = 300)
+
+```
+
+# GSE131907 LUAD Dataset
+
+## Data preparation
+
+The data was downloaded from https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE131907
+
+```{python}
+
+import gzip
+
+input_file = "../../Benchmarking/Test Datasets/GSE131907/GSE131907_Lung_Cancer_raw_UMI_matrix.txt.gz"
+output_file = "../../Benchmarking/Test Datasets/GSE131907/GSE131907_Lung_Cancer_sparse.mtx"
+triplet_file = "temp_triplets.txt"
+
+nnz = 0
+row_i = 0
+
+with gzip.open(input_file, 'rt') as f, open(triplet_file, 'w') as trip_f:
+    header = f.readline().strip().split('\t')
+    ncols = len(header) - 1  # Exclude gene column
+    
+    for line in f:
+        parts = line.strip().split('\t')
+        if len(parts) != ncols + 1:
+            continue
+        row_i += 1
+        for col_j in range(1, len(parts)):
+            v = parts[col_j]
+            if v != '0':
+                val = int(v)  # Use int for UMI counts; switch to float if needed
+                if val != 0:  # Safety check
+                    trip_f.write(f"{row_i} {col_j} {val}\n")
+                    nnz += 1
+        if row_i % 100 == 0:
+            print(f"Processed {row_i} rows, found {nnz:,} non-zeros so far.")
+
+# Assemble final .mtx
+with open(output_file, 'w') as mtx_f:
+    mtx_f.write("%%MatrixMarket matrix coordinate real general\n")  # Or 'integer' if all ints
+    mtx_f.write(f"{row_i} {ncols} {nnz}\n")
+    with open(triplet_file, 'r') as trip_f:
+        mtx_f.write(trip_f.read())
+
+# Clean up temp file
+import os
+os.remove(triplet_file)
+
+print(f"Wrote sparse matrix to {output_file} with {nnz:,} non-zero entries.")
+
+```
+
+
+```{r}
+
+library(BPCells)
+library(qs2)
+options(future.globals.maxSize = 1e9)
+
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 100)
+luad_GSE131907_counts <- Matrix::readMM("../../Benchmarking/Test Datasets/GSE131907/GSE131907_Lung_Cancer_sparse.mtx")
+
+## Assigning rownames and colnames back to the matrix
+library(data.table)
+file_path <- "../../Benchmarking/Test Datasets/GSE131907/GSE131907_Lung_Cancer_raw_UMI_matrix.txt.gz"
+dt_header <- fread(file_path, nrows = 0)
+colnames_vec <- names(dt_header)[-1]
+rownames_vec <- fread(file_path, select = 1, header = TRUE, colClasses = "character")[[1]]
+
+ncol(luad_GSE131907_counts) == length(colnames_vec) # TRUE
+nrow(luad_GSE131907_counts) == length(rownames_vec) # TRUE
+
+colnames(luad_GSE131907_counts) <- colnames_vec
+rownames(luad_GSE131907_counts) <- rownames_vec
+
+luad_GSE131907_metadata <- readr::read_delim("../../Benchmarking/Test Datasets/GSE131907/GSE131907_Lung_Cancer_cell_annotation.txt.gz")
+nrow(luad_GSE131907_metadata) == ncol(luad_GSE131907_counts) # TRUE
+all(colnames(luad_GSE131907_counts) %in% luad_GSE131907_metadata$Index) # TRUE
+all(colnames(luad_GSE131907_counts) == luad_GSE131907_metadata$Index) # FALSE
+luad_GSE131907_metadata <- luad_GSE131907_metadata[match(colnames(luad_GSE131907_counts),
+                                                         luad_GSE131907_metadata$Index),]
+all(colnames(luad_GSE131907_counts) == luad_GSE131907_metadata$Index) # TRUE
+
+luad_GSE131907_metadata$Cell_type.refined[is.na(luad_GSE131907_metadata$Cell_type.refined)] <- 
+  luad_GSE131907_metadata$Cell_type[is.na(luad_GSE131907_metadata$Cell_type.refined)]
+
+luad_GSE131907_metadata <- luad_GSE131907_metadata %>% 
+  dplyr::mutate(manual_major_annot = case_match(luad_GSE131907_metadata$Cell_type.refined,
+                           "B lymphocytes" ~ "B",
+                           "Endothelial cells" ~ "Endothelial",
+                           "Epithelial cells" ~ "Epithelial",
+                           "Fibroblasts" ~ "Fibroblast",
+                           "MAST cells" ~ "MAST",
+                           "Myeloid cells" ~ "Myeloid",
+                           "NK cells" ~ "NK",
+                           "Oligodendrocytes" ~ "Oligodendrocyte",
+                           "T lymphocytes" ~ "T",
+                           "T/NK cells" ~ "T/NK",
+                           .default = Cell_type.refined))
+
+luad_GSE131907_metadata <- luad_GSE131907_metadata %>% 
+  dplyr::mutate(manual_final_annot = case_match(luad_GSE131907_metadata$manual_major_annot,
+                           "NK" ~ "T/NK",
+                           "T" ~ "T/NK",
+                           .default = manual_major_annot))
+
+## Add additional metadata
+luad_GSE131907_metadata_additional <- readr::read_delim("../../Benchmarking/Test Datasets/GSE131907/Additional meta.txt")
+all(luad_GSE131907_metadata_additional$Sample %in% luad_GSE131907_metadata$Sample) # TRUE
+luad_GSE131907_metadata <- luad_GSE131907_metadata %>% dplyr::left_join(luad_GSE131907_metadata_additional, by = "Sample")
+
+qs2::qs_save(object = luad_GSE131907_metadata, file = "../../Benchmarking/Test Datasets/GSE131907/luad_GSE131907_metadata4dimRed.qs2")
+
+luad_GSE131907_so <- CreateSeuratObject(luad_GSE131907_counts, meta.data = luad_GSE131907_metadata, min.cells = 3, min.features = 200)
+rm(luad_GSE131907_counts)
+
+## Saving counts as a BPCells obj so that its smaller and faster for later use
+BPCells::write_matrix_dir(mat = luad_GSE131907_so[["RNA"]]$counts, dir = '../../Benchmarking/Test Datasets/GSE131907/GSE131907_Lung_Cancer_BPCells')
+### Then for loading the matrix we need to do: 
+### luad_GSE131907_counts <- BPCells::open_matrix_dir(dir = '../../Benchmarking/Test Datasets/GSE131907/GSE131907_Lung_Cancer_BPCells')
+
+## Saving the obj after preprocessing as a qs obj
+qs2::qs_save(object = luad_GSE131907_so, 
+             file = "../../Benchmarking/Test Datasets/GSE131907/luad_GSE131907_so_4dimRed.qs2")
+luad_GSE131907_so <- qs2::qs_read("../../Benchmarking/Test Datasets/GSE131907/luad_GSE131907_so_4dimRed.qs2")
+
+```
+
+## Running ClustoCell
+
+```{r}
+
+DefaultAssay(luad_GSE131907_so) <- "RNA"
+
+luad_GSE131907_so <- NormalizeData(luad_GSE131907_so, normalization.method = "LogNormalize", scale.factor = 10000)
+luad_GSE131907_so <- FindVariableFeatures(luad_GSE131907_so, selection.method = "vst", nfeatures = 2000)
+
+set.seed(121) 
+luad_GSE131907_so <- SketchData(
+  object = luad_GSE131907_so,
+  assay = "RNA",
+  ncells = 20000,
+  method = "Uniform",
+  sketched.assay = "sketch", 
+  verbose = F
+)
+
+DefaultAssay(luad_GSE131907_so) <- "sketch"
+luad_GSE131907_so <- FindVariableFeatures(luad_GSE131907_so, selection.method = "vst", nfeatures = 2000)
+luad_GSE131907_so <- ScaleData(luad_GSE131907_so, features = VariableFeatures(luad_GSE131907_so))
+luad_GSE131907_so <- RunPCA(luad_GSE131907_so, features = VariableFeatures(object = luad_GSE131907_so))
+
+
+luad_GSE131907_ClustoCell <- clustoCell(data = luad_GSE131907_so, assay = "sketch", 
+                              high_quantile = 0.25, low_quantile = 0.25, subset_to_HVG = F,
+                              identify_subclusters = F,
+                              seed = 121)
+
+luad_GSE131907_ClustoCell <- clustoCell_TransferLabel(clustoCell = luad_GSE131907_ClustoCell, 
+                                             query_expr_mat = luad_GSE131907_so, assay = "RNA",
+                                             method = "seurat-project", dims = 20, seed = 121)
+
+qs2::qs_save(object = luad_GSE131907_ClustoCell, file = "../../Benchmarking/Test Datasets/GSE131907/luad_GSE131907_ClustoCell.qs2")
+luad_GSE131907_ClustoCell <- qs2::qs_read("../../Benchmarking/Test Datasets/GSE131907/luad_GSE131907_ClustoCell.qs2")
+
+luad_GSE131907_so <- addClustoData(obj = luad_GSE131907_so, clustoCell = luad_GSE131907_ClustoCell, major_cluster_name = "ClustoCell", add_sub_clusters = FALSE)
+
+luad_GSE131907_sketch_metadata <- luad_GSE131907_so@meta.data
+qs2::qs_save(object = luad_GSE131907_sketch_metadata, file = "../../Benchmarking/Test Datasets/GSE131907/luad_GSE131907_sketch_metadata.qs2")
+
+```
+
+## UMAP Plot
+
+```{r}
+
+# Dim plot using 2000 HVGs
+
+luad_GSE131907_so <- NormalizeData(luad_GSE131907_so, normalization.method = "LogNormalize", scale.factor = 10000)
+luad_GSE131907_so <- FindVariableFeatures(luad_GSE131907_so, selection.method = "vst", nfeatures = 2000)
+luad_GSE131907_so <- ScaleData(luad_GSE131907_so, features = VariableFeatures(luad_GSE131907_so))
+luad_GSE131907_so <- RunPCA(luad_GSE131907_so, features = VariableFeatures(object = luad_GSE131907_so))
+ElbowPlot(luad_GSE131907_so, ndims = 50)
+luad_GSE131907_so <- RunUMAP(luad_GSE131907_so, dims = 1:20)
+
+qs2::qs_save(object = luad_GSE131907_so, file = "../../Benchmarking/Test Datasets/GSE131907/luad_GSE131907_so_4dimRed.qs2")
+# luad_GSE131907_so <- qs2::qs_read("../../Benchmarking/Test Datasets/GSE131907/luad_GSE131907_so_4dimRed.qs2")
+
+luad_GSE131907_manual_major_annot_umap <- CellDimPlot(luad_GSE131907_so, reduction = "umap", group_by = "manual_final_annot", 
+                                    label = F, pt_size = 0.000001, 
+                                    theme = "theme_blank", xlab = "", ylab = "", raster = T,
+                                    legend.position = "right", legend.direction = "vertical", palette = "Bold") +
+  # Add coord_fixed to remove internal axis padding (no expansion around UMAP points)
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # NEW: Remove outer white space around entire plot (top, right, bottom, left)
+    plot.margin = margin(t = 0, r = 0, b = 5, l = -5),
+    plot.subtitle = element_text(size = 7, hjust = 0.05),
+    legend.margin = margin(t = 0, r = 0, b = 5, l = -5),      # Internal legend padding
+    legend.box.margin = margin(0, 0, 0, 5),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 4.5),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt")
+  ) +
+  labs(subtitle = paste0("N Cells: ", ncol(luad_GSE131907_so)), 
+       color = NULL, x = NULL, y = NULL, tag = "c") +
+  guides(color = guide_legend(ncol = 2, bycol = T, override.aes = list(size = 2))) 
+
+```
+
+## Confusion Matrix
+
+```{r}
+
+library(scales)
+
+luad_GSE131907_ClustoCell_vs_manual_annot <- table(ClustoCell = luad_GSE131907_so$ClustoCell, manual_annot = luad_GSE131907_so$manual_final_annot)
+luad_GSE131907_ClustoCell_vs_manual_annot_maxOverlap <- round(((luad_GSE131907_ClustoCell_vs_manual_annot %>% apply(1, max) %>% sum())/ncol(luad_GSE131907_so))*100)
+
+
+luad_GSE131907_ClustoCell_vs_manual_annot <- as.data.frame(luad_GSE131907_ClustoCell_vs_manual_annot)
+colnames(luad_GSE131907_ClustoCell_vs_manual_annot) <- c("ClustoCell", "Manual Annotations", "Count")
+
+luad_GSE131907_ClustoCell_vs_manual_annot$ClustoCell <- 
+  factor(as.character(luad_GSE131907_ClustoCell_vs_manual_annot$ClustoCell), 
+         levels = unique(luad_GSE131907_ClustoCell_vs_manual_annot$ClustoCell)[order(gsub("C", "", unique(as.character(luad_GSE131907_ClustoCell_vs_manual_annot$ClustoCell))) %>% as.integer())])
+
+luad_GSE131907_ClustoCell_vs_manual_annot_plt <- ggplot(luad_GSE131907_ClustoCell_vs_manual_annot, 
+                                              aes(x = `Manual Annotations`, 
+                                                  y = `ClustoCell`,  color = Count)) +
+  geom_point(size = log10(luad_GSE131907_ClustoCell_vs_manual_annot$Count)/1.5) +
+  # geom_text(aes(label = Count)) +
+  scale_color_gradient(
+    low = "white", 
+    high = muted("#DC0000FF"),
+    labels = label_number(scale_cut = cut_short_scale(), accuracy = 1)
+  ) +
+  theme_minimal() +
+  labs(title = NULL,
+       subtitle = paste0("Concordance: ",
+                         luad_GSE131907_ClustoCell_vs_manual_annot_maxOverlap,
+                         '%')) + 
+  styled_theme(legend_position = "right", style = "classic", title_align = "left", border_mode = "all", legends_to_drop = "size") +
+  theme(text = element_text(size = 7),
+        legend.margin = margin(2, 2, 2, 2),      # Internal legend padding
+        legend.box.margin = margin(t = 0, r = 0, b = 0, l = 5),  # External space to plot
+        legend.box.spacing = unit(1, "pt"),
+        title = element_text(size = 7),
+        axis.title = element_text(size = 7),
+        plot.tag = element_text(size = 7, face = "bold"),
+        legend.title = element_text(size = 5.5, margin = margin(b = 2)),
+        legend.key.width = unit(0.25, "cm"),
+        legend.key.height = unit(0.5, "cm")) +
+  labs(tag = "d") + guides(color = guide_colorbar(barheight = unit(1.5, "cm"), 
+                                                  barwidth = unit(0.2, "cm")))
+
+```
+
+## Combining the plots
+
+```{r}
+
+luad_GSE131907_sketchPlots_combined <- 
+    (luad_GSE131907_manual_major_annot_umap + 
+        luad_GSE131907_ClustoCell_vs_manual_annot_plt +
+        plot_layout(widths = c(11, 9), heights = 1, guides = "keep"))
+
+
+ggsave(filename = "../../Testing results/GSE131907/Final/luad_GSE131907_sketchPlots_combined.png", 
+       plot = luad_GSE131907_sketchPlots_combined, device = "png", width = 6.85, height = (1.762)*1.7, units = "in", dpi = 300)
+
+ggsave(filename = "../../Testing results/GSE131907/Final/luad_GSE131907_sketchPlots_combined.pdf", 
+       plot = luad_GSE131907_sketchPlots_combined, device = "pdf", width = 6.85, height = (1.762)*1.7, units = "in", dpi = 300)
+
+```
+
+# Human Breast Atlas
+
+## Data preparation
+
+The data was downloaded from https://explore.data.humancellatlas.org/projects/9b876d31-0739-4e96-9846-f76e6a427279
+
+```{r}
+
+breast_atlas_counts <- fread("../../Benchmarking/Test Datasets/Human Breast Atlas/GSE180878_Li_Brugge_10XscRNAseq_GeneCellMatrix_RNAcounts_human.csv.gz")
+breast_atlas_counts <- breast_atlas_counts %>% column_to_rownames("GeneSymbol")
+
+breast_atlas_metadata <- fread("../../Benchmarking/Test Datasets/Human Breast Atlas/GSE180878_Li_Brugge_10XscRNAseq_Metadata_human.csv.gz")
+
+nrow(breast_atlas_metadata) == ncol(breast_atlas_counts) # TRUE
+all(colnames(breast_atlas_counts) == breast_atlas_metadata$cellID) # FALSE
+all(colnames(breast_atlas_counts) %in%  breast_atlas_metadata$cellID) # TRUE
+
+breast_atlas_metadata <- breast_atlas_metadata[match(colnames(breast_atlas_counts), breast_atlas_metadata$cellID),]
+all(colnames(breast_atlas_counts) == breast_atlas_metadata$cellID) # TRUE
+
+breast_atlas_so <- CreateSeuratObject(breast_atlas_counts, meta.data = breast_atlas_metadata, min.cells = 3, min.features = 200)
+rm(breast_atlas_counts)
+
+## Saving the obj after preprocessing as a qs obj
+qs2::qs_save(object = breast_atlas_so, 
+             file = "../../Benchmarking/Test Datasets/Human Breast Atlas/breast_atlas_so.qs2")
+# breast_atlas_so <- qs2::qs_read("../../Benchmarking/Test Datasets/Human Breast Atlas/breast_atlas_so.qs2")
+
+```
+
+## Running ClustoCell
+
+```{r}
+
+breast_atlas_ClustoCell <- clustoCell(data = breast_atlas_so, 
+                                        identify_subclusters = F, 
+                                        sketch = T, sketch_ncells = 20000, label_transfer_method = "ewcsr-cor", 
+                                        high_quantile = 0.25, low_quantile = 0.25, 
+                                        subset_to_HVG = F, seed = 121)
+
+qs2::qs_save(object = breast_atlas_ClustoCell, file = "../../Benchmarking/Test Datasets/Human Breast Atlas/breast_atlas_ClustoCell.qs2")
+breast_atlas_ClustoCell <- qs2::qs_read("../../Benchmarking/Test Datasets/Human Breast Atlas/breast_atlas_ClustoCell.qs2")
+
+breast_atlas_so <- addClustoData(obj = breast_atlas_so, clustoCell = breast_atlas_ClustoCell, major_cluster_name = "ClustoCell", add_sub_clusters = FALSE)
+
+breast_atlas_sketch_metadata <- breast_atlas_so@meta.data
+qs2::qs_save(object = breast_atlas_sketch_metadata, file = "../../Benchmarking/Test Datasets/Human Breast Atlas/breast_atlas_sketch_metadata.qs2")
+
+```
+
+## UMAP Plot
+
+```{r}
+
+# Dim plot using 2000 HVGs
+
+breast_atlas_so <- NormalizeData(breast_atlas_so, normalization.method = "LogNormalize", scale.factor = 10000)
+breast_atlas_so <- FindVariableFeatures(breast_atlas_so, selection.method = "vst", nfeatures = 2000)
+breast_atlas_so <- ScaleData(breast_atlas_so, features = VariableFeatures(breast_atlas_so))
+breast_atlas_so <- RunPCA(breast_atlas_so, features = VariableFeatures(object = breast_atlas_so))
+ElbowPlot(breast_atlas_so, ndims = 50)
+breast_atlas_so <- RunUMAP(breast_atlas_so, dims = 1:23)
+
+qs2::qs_save(object = breast_atlas_so, file = "../../Benchmarking/Test Datasets/Human Breast Atlas/breast_atlas_so.qs2")
+# breast_atlas_so <- qs2::qs_read("../../Benchmarking/Test Datasets/Human Breast Atlas/breast_atlas_so.qs2")
+
+breast_atlas_Cell.subtype_umap <- CellDimPlot(breast_atlas_so, reduction = "umap", group_by = "Cell.subtype", 
+                                    label = F, pt_size = 0.000001, 
+                                    theme = "theme_blank", xlab = "", ylab = "", raster = T,
+                                    legend.position = "right", legend.direction = "vertical", palette = "igv") +
+  # Add coord_fixed to remove internal axis padding (no expansion around UMAP points)
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    strip.text = element_text(size = 7),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # NEW: Remove outer white space around entire plot (top, right, bottom, left)
+    plot.margin = margin(t = 0, r = 0, b = 5, l = -5),
+    plot.subtitle = element_text(size = 7, hjust = 0.05),
+    legend.margin = margin(t = 0, r = 0, b = 5, l = -5),      # Internal legend padding
+    legend.box.margin = margin(0, 0, 0, 5),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 4.5),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt")
+  ) +
+  labs(subtitle = paste0("N Cells: ", ncol(breast_atlas_so)), 
+       color = NULL, x = NULL, y = NULL, tag = "e") +
+  guides(color = guide_legend(ncol = 2, bycol = T, override.aes = list(size = 2))) 
+
+```
+
+## Confusion Matrix
+
+```{r}
+
+library(scales)
+
+breast_atlas_ClustoCell_vs_manual_annot <- table(manual_annot = breast_atlas_so$Cell.subtype, ClustoCell = breast_atlas_so$ClustoCell)
+breast_atlas_ClustoCell_vs_manual_annot_maxOverlap <- round(((breast_atlas_ClustoCell_vs_manual_annot %>% apply(1, max) %>% sum())/ncol(breast_atlas_so))*100)
+
+
+breast_atlas_ClustoCell_vs_manual_annot <- as.data.frame(breast_atlas_ClustoCell_vs_manual_annot)
+colnames(breast_atlas_ClustoCell_vs_manual_annot) <- c("Manual Annotations", "ClustoCell", "Count")
+
+breast_atlas_ClustoCell_vs_manual_annot_plt <- ggplot(breast_atlas_ClustoCell_vs_manual_annot, 
+                                              aes(x = `ClustoCell`, 
+                                                  y = `Manual Annotations`,  color = Count)) +
+  geom_point(size = log10(breast_atlas_ClustoCell_vs_manual_annot$Count)/1.5) +
+  # geom_text(aes(label = Count)) +
+  scale_color_gradient(
+    low = "white", 
+    high = muted("#DC0000FF"),
+    labels = label_number(scale_cut = cut_short_scale(), accuracy = 1)
+  ) +
+  theme_minimal() +
+  labs(title = NULL,
+       subtitle = paste0("Concordance: ",
+                         breast_atlas_ClustoCell_vs_manual_annot_maxOverlap,
+                         '%')) + 
+  styled_theme(legend_position = "right", style = "classic", title_align = "left", border_mode = "all", legends_to_drop = "size") +
+  theme(text = element_text(size = 7),
+        legend.margin = margin(2, 2, 2, 2),      # Internal legend padding
+        legend.box.margin = margin(t = 0, r = 0, b = 0, l = 5),  # External space to plot
+        legend.box.spacing = unit(1, "pt"),
+        title = element_text(size = 7),
+        axis.title = element_text(size = 7),
+        plot.tag = element_text(size = 7, face = "bold"),
+        legend.title = element_text(size = 5.5, margin = margin(b = 2)),
+        legend.key.width = unit(0.25, "cm"),
+        legend.key.height = unit(0.5, "cm")) +
+  labs(tag = "f") + guides(color = guide_colorbar(barheight = unit(1.5, "cm"), 
+                                                  barwidth = unit(0.2, "cm")))
+
+```
+
+## Combining the plots
+
+```{r}
+
+breast_atlas_sketchPlots_combined <- 
+    (breast_atlas_Cell.subtype_umap + 
+        breast_atlas_ClustoCell_vs_manual_annot_plt +
+        plot_layout(widths = c(11, 9), heights = 1, guides = "keep"))
+
+
+ggsave(filename = "../../Testing results/breast_atlas/Final/breast_atlas_sketchPlots_combined.png", 
+       plot = breast_atlas_sketchPlots_combined, device = "png", width = 6.85, height = (1.762)*2, units = "in", dpi = 300)
+
+ggsave(filename = "../../Testing results/breast_atlas/Final/breast_atlas_sketchPlots_combined.pdf", 
+       plot = breast_atlas_sketchPlots_combined, device = "pdf", width = 6.85, height = (1.762)*2, units = "in", dpi = 300)
+
+```
+
+# Combine all rows
+
+```{r}
+
+figure_sketchPlots_combined_rows <- wrap_plots(hcca_sketchPlots_combined, 
+                                               luad_GSE131907_sketchPlots_combined, 
+                                               breast_atlas_sketchPlots_combined,
+                                   heights = c(1.3, 1.7, 2))
+
+ggsave(filename = "../../Testing results/figure_sketchPlots_combined_rows.pdf", 
+       plot = figure_sketchPlots_combined_rows, device = "pdf", width = 6.85, height = (1.762)*5, units = "in", dpi = 300)
+
+ggsave(filename = "../../Testing results/figure_sketchPlots_combined_rows.png", 
+       plot = figure_sketchPlots_combined_rows, device = "png", width = 6.85, height = (1.762)*5, units = "in", dpi = 300)
+
+```

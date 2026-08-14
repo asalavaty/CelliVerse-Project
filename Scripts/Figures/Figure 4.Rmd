@@ -1,0 +1,1181 @@
+---
+title: "Evaluating ClustoCell's Performance in finding cell subtypes and states"
+author: "Adrian Salavaty"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(pROC)
+library(umap)
+library(cluster)
+library(ggplot2)
+library(dplyr)
+library(splatter)
+library(Seurat)
+library(tidyverse)
+library(scplotter)
+library(scran)
+library(scater)
+library(Matrix)
+library(SeuratDisk)
+library(hdf5r)
+library(patchwork)
+library(paletteer)
+library(hrbrthemes)
+
+```
+
+# Introduction
+
+Script for evaluation of ClustoCell's Performance in finding cell subtypes and states.
+
+# Function Defintion
+
+We first define some helper functions.
+
+```{r}
+
+# Personalized Theme function
+
+styled_theme <- function(
+  style = c("academic", "minimal", "modern", "dark", "classic", "void"),
+  border_mode = c("default", "all", "none"),
+  title_align = c("center", "left", "right"),
+  legends_to_drop = NULL,
+  axes_title_drop = FALSE,
+  legend_position = c("default", "top", "bottom", "left", "right", "inside"),
+  axis_title_face = c("regular", "bold"),
+  x_axis_text_angle = 45,
+  x_axis_text_y = -0.3,
+  remove_margin = c("none", "bottom", "all", "top", "left", "right")
+) {
+  style <- match.arg(style)
+  border_mode <- match.arg(border_mode)
+  title_align <- match.arg(title_align)
+  legend_position <- match.arg(legend_position)
+  axis_title_face <- match.arg(axis_title_face)
+  remove_margin <- match.arg(remove_margin)
+
+  base_font <- "Helvetica"
+  align_map <- c(left = 0, center = 0.5, right = 1)
+  hjust_val <- align_map[title_align]
+  thin_size <- 0.3  
+
+  # Decide axis title face
+  axis_face_val <- ifelse(axis_title_face == "bold", "bold", "plain")
+
+  # Base theme selection
+  if (style == "void") {
+    theme_out <- theme_classic(base_size = 13, base_family = base_font) +
+      theme(
+        axis.title.x = element_blank(),  
+        axis.title.y = element_blank(),  
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "academic") {
+    theme_out <- theme_minimal(base_size = 14, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 16, hjust = hjust_val),
+        plot.subtitle = element_text(size = 13, hjust = hjust_val, color = "grey30"),
+        plot.caption = element_text(size = 10, hjust = 1, color = "grey40"),
+        axis.title = element_text(face = axis_face_val, size = 13),
+        axis.text = element_text(size = 12, color = "black"),
+        panel.grid.major = element_line(color = "grey80", size = thin_size),
+        panel.grid.minor = element_blank(),
+        legend.position = "right",
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "minimal") {
+    theme_out <- theme_minimal(base_size = 13, base_family = base_font) +
+      theme(
+        panel.grid = element_blank(),
+        axis.line = element_line(color = "black", size = thin_size),
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.text = element_text(color = "black"),
+        axis.title = element_text(face = axis_face_val),
+        legend.position = "none",
+        legend.title = element_text(face = "italic")
+      )
+  } else if (style == "modern") {
+    theme_out <- theme_light(base_size = 13, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.border = element_blank(),
+        panel.grid.major = element_line(color = "grey80", linetype = "dashed", size = thin_size),
+        panel.grid.minor = element_blank(),
+        legend.position = "bottom",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  } else if (style == "dark") {
+    theme_out <- theme_minimal(base_size = 13, base_family = base_font) +
+      theme(
+        plot.background = element_rect(fill = "black", color = NA),
+        panel.background = element_rect(fill = "black", color = NA),
+        panel.grid.major = element_line(color = "grey30", size = thin_size),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(face = "bold", size = 15, color = "white", hjust = hjust_val),
+        plot.subtitle = element_text(color = "grey80", hjust = hjust_val),
+        axis.text = element_text(color = "white"),
+        axis.title = element_text(color = "white", face = axis_face_val),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        legend.text = element_text(color = "white"),
+        legend.title = element_text(color = "white", face = "italic"),
+        axis.line = element_line(color = "white", size = thin_size)
+      )
+  } else if (style == "classic") {
+    theme_out <- theme_classic(base_size = 13, base_family = base_font) +
+      theme(
+        plot.title = element_text(face = "bold", size = 15, hjust = hjust_val),
+        axis.title = element_text(face = axis_face_val),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        legend.title = element_text(face = "italic"),
+        axis.line = element_line(color = "black", size = thin_size)
+      )
+  }
+
+  # Apply border mode
+  if (border_mode == "all") {
+    theme_out <- theme_out + theme(panel.border = element_rect(color = "black", fill = NA, size = thin_size))
+  } else if (border_mode == "none") {
+    theme_out <- theme_out + theme(panel.border = element_blank(), axis.line = element_blank())
+  }
+
+  # Drop axes titles if requested
+  if (axes_title_drop) {
+    theme_out <- theme_out + theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+  }
+
+  # Override x-axis text angle and vertical position
+  theme_out <- theme_out + theme(
+    axis.text.x = element_text(
+      angle = x_axis_text_angle,
+      vjust = 1,
+      hjust = 1,
+      margin = margin(t = x_axis_text_y)
+    )
+  )
+
+  # Handle margin removal
+  if (remove_margin == "all") {
+    theme_out <- theme_out + theme(plot.margin = margin(0, 0, 0, 0))
+  } else if (remove_margin == "top") {
+    theme_out <- theme_out + theme(plot.margin = margin(t = 0))
+  } else if (remove_margin == "bottom") {
+    theme_out <- theme_out + theme(plot.margin = margin(b = 0))
+  } else if (remove_margin == "left") {
+    theme_out <- theme_out + theme(plot.margin = margin(l = 0))
+  } else if (remove_margin == "right") {
+    theme_out <- theme_out + theme(plot.margin = margin(r = 0))
+  }
+  # if "none", do nothing
+
+  # Legend positioning override
+  if (legend_position != "default") {
+    if (legend_position == "inside") {
+      theme_out <- theme_out + theme(
+        legend.position = c(0.98, 0.98),
+        legend.justification = c("right", "top"),
+        legend.direction = "vertical"
+      )
+    } else {
+      horiz <- legend_position %in% c("top", "bottom")
+      theme_out <- theme_out + theme(
+        legend.position = legend_position,
+        legend.direction = if (horiz) "horizontal" else "vertical"
+      )
+    }
+  }
+
+  # Return theme + guides if needed
+  if (!is.null(legends_to_drop)) {
+    drop_list <- lapply(legends_to_drop, function(x) "none")
+    names(drop_list) <- legends_to_drop
+    return(list(theme_out, guides(.list = drop_list)))
+  } else {
+    return(theme_out)
+  }
+}
+
+#____________
+
+# Label plot
+label_plt <- function(label = "Label", size = 1) {
+  ggplot(data.frame(x = 1, y = 1), aes(x = x, y = y)) +
+    # Draw a single vertical bar
+    geom_col(width = 0.6, fill = "lightgrey", color = "black") +
+    # Add vertical text (angle=90)
+    annotate("text", x = 1, y = 0.5, label = label, size = size,
+             angle = 90, size = 6, vjust = 0.5, hjust = 0.5) +
+    # Remove all extra space
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0), limits = c(0, 1)) +
+    theme_void(base_size = 14) +             # no axes, ticks, labels
+    theme(
+        plot.margin = margin(0, 0, 0, 0),      # remove outside margins
+        panel.spacing = unit(0, "pt"),         # remove panel padding
+        plot.background = element_blank(),     # no background
+        panel.background = element_blank()
+    )
+}
+
+```
+
+
+```{r}
+
+# Concordance = 100*Sum(rowMax)/N
+
+library(paletteer)
+
+paste(as.vector(col2rgb("#0000CCFF")), collapse = " ")
+
+# https://pmassicotte.github.io/paletteer_gallery/
+
+paletteer::paletteer_d("MetBrewer::Austria", 7)
+#A40000FF #16317DFF #007E2FFF #FFCD12FF #B86092FF #721B3EFF #00B7A7FF 
+
+plotthis::palette_list %>% names()
+
+# Best pals from ggsci: pal_npg (10), pal_d3 (10), pal_ucscgb (26), pal_igv (51)
+
+# "#FF0000FF" "#FF9900FF" "#FFCC00FF" "#00FF00FF" "#6699FFFF" "#CC33FFFF" "#99991EFF" "#999999FF" "#FF00CCFF" "#CC0000FF" "#FFCCCCFF" "#FFFF00FF" "#CCFF00FF" "#358000FF" "#0000CCFF" "#99CCFFFF" "#00FFFFFF"
+# "#CCFFFFFF" "#9900CCFF" "#CC99FFFF" "#996600FF" "#666600FF" "#666666FF" "#CCCCCCFF" "#79CC3DFF" "#CCCC99FF"
+
+# "#1F77B4FF" "#FF7F0EFF" "#2CA02CFF" "#D62728FF" "#9467BDFF" "#8C564BFF" "#E377C2FF" "#7F7F7FFF" "#BCBD22FF" "#17BECFFF"
+
+# NPG colors:
+# "#E64B35FF" "#4DBBD5FF" "#00A087FF" "#3C5488FF" "#F39B7FFF" "#8491B4FF" "#91D1C2FF" "#DC0000FF" "#7E6148FF" "#B09C85FF"
+
+# "#5050FFFF" "#CE3D32FF" "#749B58FF" "#F0E685FF" "#466983FF" "#BA6338FF" "#5DB1DDFF" "#802268FF" "#6BD76BFF" "#D595A7FF" "#924822FF" "#837B8DFF" "#C75127FF" "#D58F5CFF" "#7A65A5FF" "#E4AF69FF" "#3B1B53FF"
+# "#CDDEB7FF" "#612A79FF" "#AE1F63FF" "#E7C76FFF" "#5A655EFF" "#CC9900FF" "#99CC00FF" "#A9A9A9FF" "#CC9900FF" "#99CC00FF" "#33CC00FF" "#00CC33FF" "#00CC99FF" "#0099CCFF" "#0A47FFFF" "#4775FFFF" "#FFC20AFF"
+# "#FFD147FF" "#990033FF" "#991A00FF" "#996600FF" "#809900FF" "#339900FF" "#00991AFF" "#009966FF" "#008099FF" "#003399FF" "#1A0099FF" "#660099FF" "#990080FF" "#D60047FF" "#FF1463FF" "#00D68FFF"
+
+ # "#5050FFFF" "#CE3D32FF" "#749B58FF" "#F0E685FF" "#466983FF" "#BA6338FF" "#5DB1DDFF" "#802268FF" "#6BD76BFF" "#D595A7FF"
+
+# Define the color palettes
+
+npg_pal <- ggsci::pal_npg()(10)
+npg_reverse_pal <- rev(ggsci::pal_npg("nrc")(10))
+
+```
+
+A function for converting count df to sparse matrix
+
+```{r}
+
+library(Rcpp)
+library(RcppArmadillo)
+
+Rcpp::sourceCpp(code = '
+#define ARMA_64BIT_WORD 1
+#include <RcppArmadillo.h>
+// [[Rcpp::depends(RcppArmadillo)]]
+
+// [[Rcpp::export]]
+Rcpp::S4 denseToSparse(Rcpp::DataFrame& df) {  // Pass by reference to allow in-place modification
+  int nrows = df.nrows();
+  int ncols = df.size();
+
+  arma::sp_mat sparse(nrows, ncols);
+
+  for (int col = 0; col < ncols; ++col) {
+    arma::vec this_col = Rcpp::as<arma::vec>(df[col]);  // Wrap without copying
+    sparse.col(col) = this_col;  // Assigns only non-zeros to sparse
+    df[col] = R_NilValue;  // Free the column memory progressively
+  }
+
+  return Rcpp::wrap(sparse);  // Returns as dgCMatrix S4 object
+}
+')
+
+```
+
+
+Concordance = 100*Sum(rowMax)/N
+
+# Data preparation
+
+## PBMC3K
+
+```{r}
+
+# SeuratData::InstallData("pbmc3k")
+pbmc <- SeuratData::LoadData("pbmc3k")
+pbmc <- NormalizeData(pbmc, normalization.method = "LogNormalize", scale.factor = 10000)
+pbmc <- FindVariableFeatures(pbmc, selection.method = "vst", nfeatures = 2000)
+pbmc <- ScaleData(pbmc, features = VariableFeatures(pbmc))
+pbmc <- RunPCA(pbmc, features = VariableFeatures(object = pbmc))
+pbmc <- FindNeighbors(pbmc, dims = 1:10)
+pbmc <- FindClusters(pbmc, resolution = 0.5)
+pbmc <- RunUMAP(pbmc, dims = 1:10)
+pbmc_ClustoCell <- clustoCell(data = pbmc, high_quantile = 0.25, low_quantile = 0.25, subset_to_HVG = F, seed = 121)
+pbmc <- addClustoData(obj = pbmc, clustoCell = pbmc_ClustoCell, major_cluster_name = "ClustoCell", sub_cluster_name = "SubClustoCell")
+
+#____________________________________
+
+pbmc$manual_annot <- pbmc$seurat_annotations
+
+pbmc@meta.data <- pbmc@meta.data %>% 
+  dplyr::mutate(major_manual_cellTypes = case_when(
+    as.character(manual_annot) %in% c("Naive CD4 T", "Memory CD4 T") ~ "CD4 T",
+    as.character(manual_annot) %in% c("B") ~ "B",
+    as.character(manual_annot) %in% c("CD8 T", "NK") ~ "CL",
+    as.character(manual_annot) %in% c("CD14+ Mono", "FCGR3A+ Mono", "DC") ~ "MNP",
+    as.character(manual_annot) %in% c("Platelet") ~ "PLT",
+    .default = NA
+  ))
+
+pbmc$major_manual_cellTypes <- factor(pbmc$major_manual_cellTypes, levels = c("CD4 T", "B", "CL", "MNP", "PLT"))
+
+### Manual annotations
+
+pbmc$manual_annot <- as.character(pbmc$manual_annot)
+pbmc$manual_annot <- factor(pbmc$manual_annot, levels = rev(c("Naive CD4 T", "Memory CD4 T", "B", "CD8 T", "NK", "CD14+ Mono", "FCGR3A+ Mono", "DC", "Platelet")))
+
+```
+
+## LUAD Cell Atlas (GSE131907)
+
+The data was downloaded from https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE131907
+
+```{python}
+
+import gzip
+
+input_file = "../../../Benchmarking/Test Datasets/GSE131907/GSE131907_Lung_Cancer_raw_UMI_matrix.txt.gz"
+output_file = "../../../Benchmarking/Test Datasets/GSE131907/GSE131907_Lung_Cancer_sparse.mtx"
+triplet_file = "temp_triplets.txt"
+
+nnz = 0
+row_i = 0
+
+with gzip.open(input_file, 'rt') as f, open(triplet_file, 'w') as trip_f:
+    header = f.readline().strip().split('\t')
+    ncols = len(header) - 1  # Exclude gene column
+    
+    for line in f:
+        parts = line.strip().split('\t')
+        if len(parts) != ncols + 1:
+            continue
+        row_i += 1
+        for col_j in range(1, len(parts)):
+            v = parts[col_j]
+            if v != '0':
+                val = int(v)  # Use int for UMI counts; switch to float if needed
+                if val != 0:  # Safety check
+                    trip_f.write(f"{row_i} {col_j} {val}\n")
+                    nnz += 1
+        if row_i % 100 == 0:
+            print(f"Processed {row_i} rows, found {nnz:,} non-zeros so far.")
+
+# Assemble final .mtx
+with open(output_file, 'w') as mtx_f:
+    mtx_f.write("%%MatrixMarket matrix coordinate real general\n")  # Or 'integer' if all ints
+    mtx_f.write(f"{row_i} {ncols} {nnz}\n")
+    with open(triplet_file, 'r') as trip_f:
+        mtx_f.write(trip_f.read())
+
+# Clean up temp file
+import os
+os.remove(triplet_file)
+
+print(f"Wrote sparse matrix to {output_file} with {nnz:,} non-zero entries.")
+
+```
+
+
+```{r}
+
+library(BPCells)
+library(qs2)
+options(future.globals.maxSize = 1e9)
+
+Sys.setenv("VROOM_CONNECTION_SIZE" = 131072 * 100)
+luad_GSE131907_counts <- Matrix::readMM("../../../Benchmarking/Test Datasets/GSE131907/GSE131907_Lung_Cancer_sparse.mtx")
+
+## Assigning rownames and colnames back to the matrix
+library(data.table)
+file_path <- "../../../Benchmarking/Test Datasets/GSE131907/GSE131907_Lung_Cancer_raw_UMI_matrix.txt.gz"
+dt_header <- fread(file_path, nrows = 0)
+colnames_vec <- names(dt_header)[-1]
+rownames_vec <- fread(file_path, select = 1, header = TRUE, colClasses = "character")[[1]]
+
+ncol(luad_GSE131907_counts) == length(colnames_vec) # TRUE
+nrow(luad_GSE131907_counts) == length(rownames_vec) # TRUE
+
+colnames(luad_GSE131907_counts) <- colnames_vec
+rownames(luad_GSE131907_counts) <- rownames_vec
+
+luad_GSE131907_metadata <- readr::read_delim("../../../Benchmarking/Test Datasets/GSE131907/GSE131907_Lung_Cancer_cell_annotation.txt.gz")
+nrow(luad_GSE131907_metadata) == ncol(luad_GSE131907_counts) # TRUE
+all(colnames(luad_GSE131907_counts) %in% luad_GSE131907_metadata$Index) # TRUE
+all(colnames(luad_GSE131907_counts) == luad_GSE131907_metadata$Index) # FALSE
+luad_GSE131907_metadata <- luad_GSE131907_metadata[match(colnames(luad_GSE131907_counts),
+                                                         luad_GSE131907_metadata$Index),]
+all(colnames(luad_GSE131907_counts) == luad_GSE131907_metadata$Index) # TRUE
+
+luad_GSE131907_metadata$Cell_type.refined[is.na(luad_GSE131907_metadata$Cell_type.refined)] <- 
+  luad_GSE131907_metadata$Cell_type[is.na(luad_GSE131907_metadata$Cell_type.refined)]
+
+luad_GSE131907_metadata <- luad_GSE131907_metadata %>% 
+  dplyr::mutate(manual_major_annot = case_match(luad_GSE131907_metadata$Cell_type.refined,
+                           "B lymphocytes" ~ "B",
+                           "Endothelial cells" ~ "EC",
+                           "Epithelial cells" ~ "Epi",
+                           "Fibroblasts" ~ "FB",
+                           "MAST cells" ~ "MC",
+                           "Myeloid cells" ~ "Myeloid",
+                           "NK cells" ~ "NK",
+                           "Oligodendrocytes" ~ "OL",
+                           "T lymphocytes" ~ "T",
+                           "Undetermined" ~ NA,
+                           "T/NK cells" ~ "T/NK",
+                           .default = Cell_type))
+
+## Add additional metadata
+luad_GSE131907_metadata_additional <- readr::read_delim("../../../Benchmarking/Test Datasets/GSE131907/Additional meta.txt")
+all(luad_GSE131907_metadata_additional$Sample %in% luad_GSE131907_metadata$Sample) # TRUE
+luad_GSE131907_metadata <- luad_GSE131907_metadata %>% dplyr::left_join(luad_GSE131907_metadata_additional, by = "Sample")
+qs2::qs_save(object = luad_GSE131907_metadata, file = "../../../Benchmarking/Test Datasets/GSE131907/luad_GSE131907_metadata.qs2")
+
+luad_GSE131907_so <- CreateSeuratObject(luad_GSE131907_counts, meta.data = luad_GSE131907_metadata, min.cells = 3, min.features = 200)
+rm(luad_GSE131907_counts)
+
+## Saving counts as a BPCells obj so that its smaller and faster for later use
+BPCells::write_matrix_dir(mat = luad_GSE131907_so[["RNA"]]$counts, dir = '../../../Benchmarking/Test Datasets/GSE131907/GSE131907_Lung_Cancer_BPCells')
+### Then for loading the matrix we need to do: 
+### luad_GSE131907_counts <- BPCells::open_matrix_dir(dir = '../../../Benchmarking/Test Datasets/GSE131907/GSE131907_Lung_Cancer_BPCells')
+
+luad_GSE131907_so <- NormalizeData(luad_GSE131907_so, normalization.method = "LogNormalize", scale.factor = 10000)
+luad_GSE131907_so <- FindVariableFeatures(luad_GSE131907_so, selection.method = "vst", nfeatures = 2000)
+luad_GSE131907_so <- ScaleData(luad_GSE131907_so, features = VariableFeatures(luad_GSE131907_so))
+luad_GSE131907_so <- RunPCA(luad_GSE131907_so, features = VariableFeatures(object = luad_GSE131907_so))
+ElbowPlot(luad_GSE131907_so, ndims = 50)
+luad_GSE131907_so <- FindNeighbors(luad_GSE131907_so, dims = 1:20)
+luad_GSE131907_so <- FindClusters(luad_GSE131907_so, resolution = 0.5)
+luad_GSE131907_so <- RunUMAP(luad_GSE131907_so, dims = 1:20)
+
+## Saving the obj after preprocessing as a qs obj
+qs2::qs_save(object = luad_GSE131907_so, file = "../../../Benchmarking/Test Datasets/GSE131907/luad_GSE131907_so.qs2")
+luad_GSE131907_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE131907/luad_GSE131907_so.qs2")
+
+#_________________________________________
+
+## Checking the malignant subset
+luad_GSE131907_mal_so <- subset(luad_GSE131907_so, subset = Cell_subtype == "Malignant cells")
+
+luad_GSE131907_mal_so <- NormalizeData(luad_GSE131907_mal_so, normalization.method = "LogNormalize", scale.factor = 10000)
+luad_GSE131907_mal_so <- FindVariableFeatures(luad_GSE131907_mal_so, selection.method = "vst", nfeatures = 2000)
+luad_GSE131907_mal_so <- ScaleData(luad_GSE131907_mal_so, features = VariableFeatures(luad_GSE131907_mal_so))
+luad_GSE131907_mal_so <- RunPCA(luad_GSE131907_mal_so, features = VariableFeatures(object = luad_GSE131907_mal_so))
+ElbowPlot(luad_GSE131907_mal_so, ndims = 50)
+luad_GSE131907_mal_so <- FindNeighbors(luad_GSE131907_mal_so, dims = 1:20)
+luad_GSE131907_mal_so <- FindClusters(luad_GSE131907_mal_so, resolution = 0.5)
+luad_GSE131907_mal_so <- RunUMAP(luad_GSE131907_mal_so, dims = 1:20)
+
+luad_GSE131907_mal_so_ClustoCell <- clustoCell(data = luad_GSE131907_mal_so, 
+                                           high_quantile = 0.25, low_quantile = 0.25, 
+                                           leiden_resolution = 0.25, identify_subclusters = F,
+                                           subset_to_HVG = F, seed = 121)
+
+qs2::qs_save(object = luad_GSE131907_mal_so_ClustoCell, file = "../../../Benchmarking/Test Datasets/GSE131907/luad_GSE131907_mal_so_ClustoCell.qs2")
+
+luad_GSE131907_mal_so <- addClustoData(obj = luad_GSE131907_mal_so, clustoCell = luad_GSE131907_mal_so_ClustoCell, 
+                                   major_cluster_name = "ClustoCell", sub_cluster_name = "SubClustoCell")
+
+sapply(names(luad_GSE131907_mal_so_ClustoCell$markers$major_clusters$cluster_specific$positive_markers), function(i) {
+    cat(paste0("Cluster ", i))
+    cat(paste0(" Top Markers:\n"), 
+        paste0(luad_GSE131907_mal_so_ClustoCell$markers$major_clusters$cluster_specific$positive_markers[[i]] %>% dplyr::slice(1:20) %>% dplyr::pull(Feature), collapse = ", ")) 
+    cat("\n")
+})
+
+luad_GSE131907_mal_origin_markoClust <- markoClust(data = luad_GSE131907_mal_so, 
+                                                   cluster_labels = "Sample_Origin", identify_subclusters = F,
+                                                   seed = 121)
+
+luad_GSE131907_mal_markers <- getDatasetMarkers(obj = luad_GSE131907_mal_origin_markoClust, 
+                                                positive_markers = T, negative_markers = F, medium_markers = F,
+                                                thresh_mode = "n", pos_thresh = 850)
+
+luad_GSE131907_mal_so <- ScaleData(luad_GSE131907_mal_so, features = luad_GSE131907_mal_markers$combined_markers)
+luad_GSE131907_mal_so <- RunPCA(luad_GSE131907_mal_so, features = luad_GSE131907_mal_markers$combined_markers)
+ElbowPlot(luad_GSE131907_mal_so, ndims = 50)
+luad_GSE131907_mal_so <- RunUMAP(luad_GSE131907_mal_so, dims = 1:20)
+
+## Saving the obj after preprocessing as a qs obj
+qs2::qs_save(object = luad_GSE131907_mal_so, file = "../../../Benchmarking/Test Datasets/GSE131907/luad_GSE131907_mal_so.qs2")
+luad_GSE131907_mal_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/GSE131907/luad_GSE131907_mal_so.qs2")
+
+```
+
+# First row
+
+```{r}
+
+pbmc_original_umap <- CellDimPlot(pbmc, reduction = "umap", group_by = c("ClustoCell"), label = F, pt_size = 0.000001, 
+                                        theme = "theme_blank", xlab = "", ylab = "", raster = F, group_by_sep = " : ", pt_alpha = 0.75,
+                                        legend.position = "right", legend.direction = "vertical", palette = "igv") +
+  # Add coord_fixed to remove internal axis padding (no expansion around UMAP points)
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # NEW: Remove outer white space around entire plot (top, right, bottom, left)
+    plot.tag = element_text(size = 7, face = "bold"),
+    plot.margin = margin(t = 0, r = 2, b = 5, l = -10),
+    legend.margin = margin(t = -5, r = 2, b = 0, l = -5),      # Internal legend padding
+    legend.box.margin = margin(t = -5, r = 2, b = 0, l = -5),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt")
+  ) +
+  labs(color = NULL, x = NULL, y = NULL, tag = "a") +
+  guides(color = guide_legend(override.aes = list(size = 2))) 
+
+#__________________________________________
+
+pbmc_clustoCell_manual_annot_tbl <- table(pbmc$SubClustoCell, pbmc$manual_annot)
+pbmc_clustoCell_manual_annot_prop_tbl <- prop.table(pbmc_clustoCell_manual_annot_tbl, margin=1)  # columns = manual_annot, rows = SubClustoCell
+pbmc_clustoCell_manual_annot_prop_tbl <- pbmc_clustoCell_manual_annot_prop_tbl[!rownames(pbmc_clustoCell_manual_annot_prop_tbl) %in% "Quiescent",]
+
+pbmc_clustoCell_manual_annot_prop_tbl_plt <- ggalign::ggheatmap(pbmc_clustoCell_manual_annot_prop_tbl, filling = NULL) +
+  geom_tile(aes(fill = value), color = "black", width = 0.9, height = 0.9) +
+  scale_fill_gradient(low = "white", high = scales::muted("#DC0000FF")) +
+  labs(subtitle = "Fraction of Celltypes per Subcluster", fill = NULL, tag = "b") +
+  styled_theme(legend_position = "right", style = "classic", title_align = "left", border_mode = "none", legends_to_drop = "size") +
+  coord_flip() +
+  theme(plot.margin = margin(t = 0, r = 0, b = 0, l = -4),
+        axis.title.y = element_blank(),
+        axis.text = element_text(size = 6),
+        text = element_text(size = 7),
+        title = element_text(size = 7),
+        plot.title = element_text(size = 7),
+        plot.subtitle = element_text(size = 7, vjust = 0),
+        axis.title = element_text(size = 7),
+        plot.tag = element_text(size = 7, face = "bold"),
+        legend.title = element_text(size = 6),
+        legend.margin = margin(t = 0, r = 0, b = 0, l = -2),      # Internal legend padding
+        legend.box.margin = margin(0, 0, 0, -2),  # External space to plot
+        legend.box.spacing = unit(0, "pt"),
+        legend.key.width = unit(0.25, "cm"),
+        legend.key.height = unit(0.4, "cm"))
+
+#__________________________________________
+
+# Combine the plots
+
+first_row_combined <- (
+    pbmc_original_umap + 
+    ggalign::ggalignGrob(pbmc_clustoCell_manual_annot_prop_tbl_plt)
+  ) + 
+  plot_layout(widths = c(18, 20), heights = 1, guides = "keep")
+
+
+ggsave(filename = "../../../Testing results/GSE131907/Final/first_row_combined.png",
+       plot = first_row_combined, device = "png", width = 6.85, height = 1.762, units = "in", dpi = 300)
+
+ggsave(filename = "../../../Testing results/GSE131907/Final/first_row_combined.pdf",
+       plot = first_row_combined, device = "pdf", width = 6.85, height = 1.762, units = "in", dpi = 300)
+
+
+```
+
+# Second row
+
+```{r}
+
+# Have a look at the top positive and negative markers of each of the sub clusters
+
+pbmc_ClustoCell$markers$sub_clusters$`C2-Subclusters`$positive_markers$Sub1 %>% dplyr::slice(1:50) %>% dplyr::pull(Feature) %>% cat(sep = ", ")
+pbmc_ClustoCell$markers$sub_clusters$`C2-Subclusters`$positive_markers$Sub2 %>% dplyr::slice(1:50) %>% dplyr::pull(Feature) %>% cat(sep = ", ")
+pbmc_ClustoCell$markers$sub_clusters$`C2-Subclusters`$negative_markers$Sub1 %>% dplyr::slice(1:50) %>% dplyr::pull(Feature) %>% cat(sep = ", ")
+pbmc_ClustoCell$markers$sub_clusters$`C2-Subclusters`$negative_markers$Sub2 %>% dplyr::slice(1:50) %>% dplyr::pull(Feature) %>% cat(sep = ", ")
+
+#_________
+
+pbmc_ClustoCell$markers$sub_clusters$`C4-Subclusters`$positive_markers$Sub1 %>% dplyr::slice(1:50) %>% dplyr::pull(Feature) %>% cat(sep = ", ")
+pbmc_ClustoCell$markers$sub_clusters$`C4-Subclusters`$positive_markers$Sub2 %>% dplyr::slice(1:50) %>% dplyr::pull(Feature) %>% cat(sep = ", ")
+pbmc_ClustoCell$markers$sub_clusters$`C4-Subclusters`$negative_markers$Sub1 %>% dplyr::slice(1:50) %>% dplyr::pull(Feature) %>% cat(sep = ", ")
+pbmc_ClustoCell$markers$sub_clusters$`C4-Subclusters`$negative_markers$Sub2 %>% dplyr::slice(1:50) %>% dplyr::pull(Feature) %>% cat(sep = ", ")
+
+#_________
+
+pbmc_ClustoCell$markers$sub_clusters$`C5-Subclusters`$positive_markers$Sub1 %>% dplyr::slice(1:50) %>% dplyr::pull(Feature) %>% cat(sep = ", ")
+pbmc_ClustoCell$markers$sub_clusters$`C5-Subclusters`$positive_markers$Sub2 %>% dplyr::slice(1:50) %>% dplyr::pull(Feature) %>% cat(sep = ", ")
+pbmc_ClustoCell$markers$sub_clusters$`C5-Subclusters`$negative_markers$Sub1 %>% dplyr::slice(1:50) %>% dplyr::pull(Feature) %>% cat(sep = ", ")
+pbmc_ClustoCell$markers$sub_clusters$`C5-Subclusters`$negative_markers$Sub2 %>% dplyr::slice(1:50) %>% dplyr::pull(Feature) %>% cat(sep = ", ")
+
+#______________________________________________
+
+# Subset the object for C2 subs
+pbmc_ClustoB_subtype_so <- subset(pbmc, subset = SubClustoCell %in% c(paste("C2-Sub", c(1,2), sep = "")))
+
+
+qs2::qs_save(object = pbmc_ClustoB_subtype_so, file = "../../../Benchmarking/Test Datasets/PBMC3K/pbmc_ClustoB_subtype_so.qs2")
+
+pbmc_ClustoB_subtype_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/PBMC3K/pbmc_ClustoB_subtype_so.qs2")
+
+B_subtype.signature.list <- list(
+  "Transitional" = c("VPREB3", "TAGLN2", "CD69", "CD1C", "PLAC8"),
+  "Naïve" = c("LINC00926", "SOX4", "TCL1A")
+)
+
+## Add module scores
+pbmc_ClustoB_subtype_so <- AddModuleScore(
+  pbmc_ClustoB_subtype_so,
+  features = B_subtype.signature.list,
+  name = names(B_subtype.signature.list)
+)
+
+## Correct the names
+colnames(pbmc_ClustoB_subtype_so@meta.data)[
+  (ncol(pbmc_ClustoB_subtype_so@meta.data)-1):ncol(pbmc_ClustoB_subtype_so@meta.data)
+] <- names(B_subtype.signature.list)
+
+#_____________________
+
+pbmc_B_subtype_modules_plt <- 
+  FeatureStatPlot(pbmc_ClustoB_subtype_so, 
+                  features = c("Transitional", "Naïve"), 
+                  group_by = c("SubClustoCell"), group_name = "B Cell\nStates",
+                  ident = c("SubClustoCell"), 
+                  violin_linewidth = 0.01, ylab = "Expression",
+                  comparisons = list(c("C2-Sub1", "C2-Sub2")), ref_group = "C2-Sub1",
+                  pairwise_method = "wilcox.test", sig_labelsize = 1.6,
+                  theme = ggplot2::theme_classic, add_bg = TRUE, 
+                  add_box = T, box_width = 0.15, box_ptsize = 1.8, stack = TRUE, 
+                  palcolor = c("C2-Sub1" = "#347d6c", "C2-Sub2" = "#91D1C2FF")
+  ) +
+  labs(x = NULL, y = "Module Score", color = NULL, fill = NULL) + 
+  theme(axis.text.x = element_blank(), 
+        axis.title.x = element_blank(), 
+        axis.ticks.x = element_blank()) +
+  theme(
+    legend.title = element_text(size = 6),
+    text = element_text(size = 6),
+    strip.text = element_text(size = 6.3),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8), line = element_line(linewidth = 0.1), 
+    axis.title.y = element_text(size = 7),
+    legend.margin = margin(t = 0, r = 2, b = 2, l = 2),      # Internal legend padding
+    legend.box.margin = margin(t = 0, r = 2, b = 2, l = 2),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(10, "pt"),  # Minimize space between point and text
+    legend.key.height = unit(10, "pt"),
+    legend.text.align = 0,
+    # legend.key.spacing.y = unit(-5, "pt"),
+    # NEW: Remove outer white space around entire plot (top, right, bottom, left)
+    plot.margin = margin(0, 5, 0, 5),
+  ) +
+  labs(color = NULL, x = NULL, tag = "c") +
+  guides(
+    color = guide_legend(ncol = 1, bycol = TRUE),
+    fill  = guide_legend(ncol = 1, bycol = TRUE)
+  ) +
+  ggplot2::theme(line = element_line(linewidth = 0.1))
+
+for (i in seq_along(pbmc_B_subtype_modules_plt$layers)) {
+  if (inherits(pbmc_B_subtype_modules_plt$layers[[i]]$geom, "GeomViolin")) {
+    pbmc_B_subtype_modules_plt$layers[[i]]$aes_params$linewidth <- 0.2
+  }
+}
+
+#___________________________________________________________________________________________
+#___________________________________________________________________________________________
+
+# Subset the object for C4 subs
+pbmc_ClustoCD14Mono_subtype_so <- subset(pbmc, subset = SubClustoCell %in% c(paste("C4-Sub", c(1,2), sep = "")))
+
+qs2::qs_save(object = pbmc_ClustoCD14Mono_subtype_so, file = "../../../Benchmarking/Test Datasets/PBMC3K/pbmc_ClustoCD14Mono_subtype_so.qs2")
+
+pbmc_ClustoCD14Mono_subtype_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/PBMC3K/pbmc_ClustoCD14Mono_subtype_so.qs2")
+
+CD14Mono_subtype.signature.list <- list(
+    "IFN-responsive" = c(
+    "CST3", "FCN1", "HLA-DRB1", "HLA-DPA1", "HLA-DRB5",
+    "ISG15", "IFI6", "IFITM3", "CD68", "SERPINA1", "TSPO", "PSAP", "FOSB"
+  ),
+  "Infl. (S100-high)" = c(
+    "S100A8", "S100A9", "LGALS1", "IL8", "SOCS3",
+    "G0S2", "TBXAS1", "AIF1", "LST1"
+  )
+)
+
+## Add module scores
+pbmc_ClustoCD14Mono_subtype_so <- AddModuleScore(
+  pbmc_ClustoCD14Mono_subtype_so,
+  features = CD14Mono_subtype.signature.list,
+  name = names(CD14Mono_subtype.signature.list)
+)
+
+## Correct the names
+colnames(pbmc_ClustoCD14Mono_subtype_so@meta.data)[
+  (ncol(pbmc_ClustoCD14Mono_subtype_so@meta.data)-1):ncol(pbmc_ClustoCD14Mono_subtype_so@meta.data)
+] <- names(CD14Mono_subtype.signature.list)
+
+#_____________________
+
+pbmc_CD14Mono_subtype_modules_plt <- 
+  FeatureStatPlot(pbmc_ClustoCD14Mono_subtype_so, 
+                  features = c("IFN-responsive", "Infl. (S100-high)"), 
+                  group_by = c("SubClustoCell"), group_name = "CD14 Monocyte\nStates",
+                  ident = c("SubClustoCell"), 
+                  violin_linewidth = 0.01, ylab = "Expression",
+                  comparisons = list(c("C4-Sub1", "C4-Sub2")), ref_group = "C4-Sub1",
+                  pairwise_method = "wilcox.test", sig_labelsize = 1.6,
+                  theme = ggplot2::theme_classic, add_bg = TRUE, 
+                  add_box = T, box_width = 0.15, box_ptsize = 1.8, stack = TRUE, 
+                  palette = "igv",
+                  palcolor = c("C4-Sub1" = "#3C5488", "C4-Sub2" = "#96a9d1")
+  ) +
+  labs(x = NULL, y = "Module Score", color = NULL, fill = NULL) + 
+  theme(axis.text.x = element_blank(), 
+        axis.title.x = element_blank(), 
+        axis.ticks.x = element_blank()) +
+  theme(
+    legend.title = element_text(size = 6),
+    text = element_text(size = 6),
+    strip.text = element_text(size = 6.3),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8), line = element_line(linewidth = 0.1), 
+    axis.title.y = element_text(size = 7),
+    legend.margin = margin(t = 0, r = 2, b = 2, l = 2),      # Internal legend padding
+    legend.box.margin = margin(t = 0, r = 2, b = 2, l = 2),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(10, "pt"),  # Minimize space between point and text
+    legend.key.height = unit(10, "pt"),
+    legend.text.align = 0,
+    # legend.key.spacing.y = unit(-5, "pt"),
+    # NEW: Remove outer white space around entire plot (top, right, bottom, left)
+    plot.margin = margin(0, 5, 0, 5),
+  ) +
+  labs(color = NULL, x = NULL, tag = "d") +
+  guides(
+    color = guide_legend(ncol = 1, bycol = TRUE),
+    fill  = guide_legend(ncol = 1, bycol = TRUE)
+  ) +
+  ggplot2::theme(line = element_line(linewidth = 0.1))
+
+for (i in seq_along(pbmc_CD14Mono_subtype_modules_plt$layers)) {
+  if (inherits(pbmc_CD14Mono_subtype_modules_plt$layers[[i]]$geom, "GeomViolin")) {
+    pbmc_CD14Mono_subtype_modules_plt$layers[[i]]$aes_params$linewidth <- 0.2
+  }
+}
+
+#___________________________________________________________________________________________
+#___________________________________________________________________________________________
+
+# Subset the object for C5 subs
+pbmc_ClustoPlatelet_subtype_so <- subset(pbmc, subset = SubClustoCell %in% c(paste("C5-Sub", c(1,2), sep = "")))
+
+qs2::qs_save(object = pbmc_ClustoPlatelet_subtype_so, file = "../../../Benchmarking/Test Datasets/PBMC3K/pbmc_ClustoPlatelet_subtype_so.qs2")
+
+pbmc_ClustoPlatelet_subtype_so <- qs2::qs_read("../../../Benchmarking/Test Datasets/PBMC3K/pbmc_ClustoPlatelet_subtype_so.qs2")
+
+Platelet_subtype.signature.list <- list(
+  "Procoagulant" = c(
+    "RAP1B", "XPNPEP1", "SPARC", "FERMT3", "CCL5", "NGFRAP1" 
+  ),
+  "Aggregatory" = c(
+    "ITGA2B", "VDAC3", "TUBB1", "SPINT2", "PKM", "PRDX6", "RGS18"
+  )
+)
+
+## Add module scores
+pbmc_ClustoPlatelet_subtype_so <- AddModuleScore(
+  pbmc_ClustoPlatelet_subtype_so,
+  features = Platelet_subtype.signature.list,
+  name = names(Platelet_subtype.signature.list)
+)
+
+## Correct the names
+colnames(pbmc_ClustoPlatelet_subtype_so@meta.data)[
+  (ncol(pbmc_ClustoPlatelet_subtype_so@meta.data)-1):ncol(pbmc_ClustoPlatelet_subtype_so@meta.data)
+] <- names(Platelet_subtype.signature.list)
+
+#_____________________
+
+pbmc_Platelet_subtype_modules_plt <- 
+  FeatureStatPlot(pbmc_ClustoPlatelet_subtype_so, 
+                  features = c("Procoagulant", "Aggregatory"), 
+                  group_by = c("SubClustoCell"), group_name = "Platelet\nStates",
+                  ident = c("SubClustoCell"), 
+                  violin_linewidth = 0.01, ylab = "Expression",
+                  comparisons = list(c("C5-Sub1", "C5-Sub2")), ref_group = "C5-Sub1",
+                  pairwise_method = "wilcox.test", sig_labelsize = 1.6,
+                  theme = ggplot2::theme_classic, add_bg = TRUE, 
+                  add_box = T, box_width = 0.15, box_ptsize = 1.8, stack = TRUE, 
+                  palette = "igv",
+                  palcolor = c("C5-Sub1" = "#E64B35FF", "C5-Sub2" = "#f2a398")
+  ) +
+  labs(x = NULL, y = "Module Score") + 
+  theme(axis.text.x = element_blank(), 
+        axis.title.x = element_blank(), 
+        axis.ticks.x = element_blank()) +
+  theme(
+    legend.title = element_text(size = 6),
+    text = element_text(size = 6),
+    strip.text = element_text(size = 6.3),
+    plot.tag = element_text(size = 7, face = "bold"),
+    title = element_text(size = 8), line = element_line(linewidth = 0.1), 
+    axis.title.y = element_text(size = 7),
+    legend.margin = margin(t = 0, r = 2, b = 2, l = 2),      # Internal legend padding
+    legend.box.margin = margin(t = 0, r = 2, b = 2, l = 2),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(10, "pt"),  # Minimize space between point and text
+    legend.key.height = unit(10, "pt"),
+    legend.text.align = 0,
+    # legend.key.spacing.y = unit(-5, "pt"),
+    # NEW: Remove outer white space around entire plot (top, right, bottom, left)
+    plot.margin = margin(0, 5, 0, 5),
+  ) +
+  labs(color = NULL, x = NULL, tag = "e") +
+  guides(
+    color = guide_legend(ncol = 1, bycol = TRUE),
+    fill  = guide_legend(ncol = 1, bycol = TRUE)
+  ) +
+  ggplot2::theme(line = element_line(linewidth = 0.1))
+
+for (i in seq_along(pbmc_Platelet_subtype_modules_plt$layers)) {
+  if (inherits(pbmc_Platelet_subtype_modules_plt$layers[[i]]$geom, "GeomViolin")) {
+    pbmc_Platelet_subtype_modules_plt$layers[[i]]$aes_params$linewidth <- 0.2
+  }
+}
+
+#__________________________________________
+
+# Combine the plots
+
+second_row_combined <- (
+    pbmc_B_subtype_modules_plt +
+    pbmc_CD14Mono_subtype_modules_plt +
+    pbmc_Platelet_subtype_modules_plt
+) + 
+  plot_layout(widths = c(12.67, 12.67, 12.67), heights = 1, guides = "keep")
+
+
+ggsave(filename = "../../../Testing results/pbmc_second_row_combined.png",
+       plot = second_row_combined, device = "png", width = 6.85, height = 1.762, units = "in", dpi = 300)
+
+ggsave(filename = "../../../Testing results/pbmc_second_row_combined.pdf",
+       plot = second_row_combined, device = "pdf", width = 6.85, height = 1.762, units = "in", dpi = 300)
+
+```
+
+# Third row
+
+```{r}
+
+luad_GSE131907_mal_origin_umap <- CellDimPlot(luad_GSE131907_mal_so,
+                                              reduction = "umap", group_by = "Sample_Origin", label = F, pt_size = 0.000001, 
+                                              theme = "theme_blank", xlab = "", ylab = "", raster = F,
+                                              legend.position = "right", legend.direction = "vertical", palette = "npg") +
+  # Add coord_fixed to remove internal axis padding (no expansion around UMAP points)
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # NEW: Remove outer white space around entire plot (top, right, bottom, left)
+    plot.tag = element_text(size = 7, face = "bold"),
+    plot.margin = margin(t = 0, r = 0, b = 5, l = 2),
+    legend.margin = margin(t = 0, r = 2, b = 2, l = 2),      # Internal legend padding
+    legend.box.margin = margin(t = 0, r = 2, b = 2, l = 2),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(-5, "pt"),  # Minimize space between point and text
+    legend.text.align = -5,
+    legend.key.spacing.y = unit(-6, "pt")
+  ) +
+  labs(color = NULL, x = NULL, y = NULL, tag = "f") +
+  guides(color = guide_legend(override.aes = list(size = 2))) 
+
+#_____________
+
+luad_GSE131907_mal_clustoCell_umap <- CellDimPlot(luad_GSE131907_mal_so,
+                                              reduction = "umap", group_by = "ClustoCell", label = F, pt_size = 0.000001, 
+                                              theme = "theme_blank", xlab = "", ylab = "", raster = F,
+                                              legend.position = "top", legend.direction = "horizontal", palette = "igv") +
+  # Add coord_fixed to remove internal axis padding (no expansion around UMAP points)
+  coord_fixed(clip = "off", expand = FALSE) +  
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # NEW: Remove outer white space around entire plot (top, right, bottom, left)
+    plot.tag = element_text(size = 7, face = "bold"),
+    plot.margin = margin(t = 0, r = 0, b = 5, l = -2),
+    legend.margin = margin(t = 0, r = 0, b = 2, l = -4),      # Internal legend padding
+    legend.box.margin = margin(t = 0, r = 0, b = 2, l = -4),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5, margin = margin(l = 2)),
+    legend.key.width = unit(-5, "pt"),  # Minimize space between point and text
+    legend.text.align = -45,
+    legend.key.spacing.y = unit(-6, "pt"),
+    legend.key.spacing.x = unit(3, "pt")
+  ) +
+  labs(color = NULL, x = NULL, y = NULL, tag = "g") +
+  guides(
+    color = guide_legend(nrow = 2, byrow = TRUE, override.aes = list(size = 2)),
+    fill  = guide_legend(nrow = 2, byrow = TRUE, override.aes = list(size = 2))
+  ) 
+
+#__________________________________________
+
+luad_GSE131907_mal_clustoCell_origin_tbl <- table(luad_GSE131907_mal_so$ClustoCell, luad_GSE131907_mal_so$Sample_Origin)
+luad_GSE131907_mal_clustoCell_origin_prop_tbl <- prop.table(luad_GSE131907_mal_clustoCell_origin_tbl, margin=1)  # columns = Sample_Origin, rows = ClustoCell
+
+luad_GSE131907_mal_clustoCell_origin_prop_tbl_plt <- ggalign::ggheatmap(luad_GSE131907_mal_clustoCell_origin_prop_tbl, filling = NULL) +
+    geom_tile(aes(fill = value), color = "black", width = 0.9, height = 0.9) +
+  scale_fill_gradient(low = "white", high = scales::muted("#DC0000FF")) +
+  labs(subtitle = "Fraction of Sample Origins per Cluster", fill = NULL, tag = "h") +
+  styled_theme(legend_position = "right", style = "classic", title_align = "left", border_mode = "none", legends_to_drop = "size") +
+  coord_flip() +
+  theme(plot.margin = margin(t = 0, r = 0, b = 0, l = -4),
+        axis.title.y = element_blank(),
+        text = element_text(size = 7),
+        title = element_text(size = 7),
+        plot.title = element_text(size = 7),
+        plot.subtitle = element_text(size = 7, vjust = 0),
+        axis.title = element_text(size = 7),
+        plot.tag = element_text(size = 7, face = "bold"),
+        legend.title = element_text(size = 6),
+        legend.margin = margin(t = 0, r = 0, b = 0, l = -4),      # Internal legend padding
+        legend.box.margin = margin(0, 0, 0, -4),  # External space to plot
+        legend.box.spacing = unit(0, "pt"),
+        legend.key.width = unit(0.25, "cm"),
+        legend.key.height = unit(0.4, "cm"))
+
+#__________________________________________
+
+# Combine the plots
+
+third_row_combined <- (
+    luad_GSE131907_mal_origin_umap + 
+    luad_GSE131907_mal_clustoCell_umap +
+    ggalign::ggalignGrob(luad_GSE131907_mal_clustoCell_origin_prop_tbl_plt)
+) + 
+  plot_layout(widths = c(10.7, 14, 13.4), heights = 1, guides = "keep")
+
+
+ggsave(filename = "../../../Testing results/GSE131907/Final/third_row_combined.png", 
+       plot = third_row_combined, device = "png", width = 6.85, height = 1.762, units = "in", dpi = 300)
+
+ggsave(filename = "../../../Testing results/GSE131907/Final/third_row_combined.pdf", 
+       plot = third_row_combined, device = "pdf", width = 6.85, height = 1.762, units = "in", dpi = 300)
+
+
+```
+
+# Fourth row
+
+```{r}
+
+# Signature list for lymph met:
+LN_Secretory = c("SERPINA1", "SCGB3A1", "HP", "IGFBP3")
+
+# Signature list for adv. primary:
+Advanced_Primary = c("NUPR1", "CXCL14", "ICAM1", "S100P", "AGR3", "FAM83A")
+
+#_____________________________________________________
+
+# Define gene sets for LUAD brain metastatic cell states
+brainMet.signature.list <- list(
+  "AT2-like" = c("SFTPC", "SFTPA1", "SFTPA2", "PIGR", "HLA_DPB1", "TXNIP"),
+  "Progenitor-like" = c("CEACAM5", "ARHGAP5", "KLK11", "IFI16", "NFKBIZ", "TCEA3"),
+  "Secretory-Club" = c("SCGB3A1", "TFF3", "TFF1", "BPIFA1", "BPIFB2", "HLA_DPA1"),
+  "Immune Modulatory/Dormant" = c("TMEM176B", "TMEM176A", "HPGD", "IGFBP3", "AKR1C3"),
+  "Secretory/Immune-engaged" = c("SCGB3A1", "TFF3", "HLA_DPA1", "SEPP1", "SOD3"),
+  "EMT / Aggressive (1)" = c("S100A4", "S100P", "STMN1", "MET", "EGFL7", "RNASET2"),
+  "EMT / Aggressive (2)" = c("S100A4", "S100P", "STMN1", "EGFR", "KRT6A", "DDIT4"),
+  "Oxidative / Inflammatory" = c("SPP1", "APOE", "NNMT", "MT1X", "SERPINA1", "CCL3", "HPGD")
+)
+
+## Add module scores
+luad_GSE131907_mal_so <- AddModuleScore(
+  luad_GSE131907_mal_so,
+  features = brainMet.signature.list,
+  name = names(brainMet.signature.list)
+)
+
+## Correct the names
+colnames(luad_GSE131907_mal_so@meta.data)[
+  (ncol(luad_GSE131907_mal_so@meta.data)-7):ncol(luad_GSE131907_mal_so@meta.data)
+] <- names(brainMet.signature.list)
+
+## Assign dominant state based on module scores
+luad_GSE131907_mal_so@meta.data$BrainMet_State <- apply(
+  luad_GSE131907_mal_so@meta.data[, names(brainMet.signature.list)],
+  1,
+  function(x) names(brainMet.signature.list)[which.max(x)]
+)
+
+luad_GSE131907_mal_ClustoBrainMet_so <- subset(luad_GSE131907_mal_so, subset = ClustoCell %in% c(paste("C", c(1:3,6,7,10:12), sep = "")))
+luad_GSE131907_mal_ClustoBrainMet_so$BrainMet_State <- factor(luad_GSE131907_mal_ClustoBrainMet_so$BrainMet_State)
+luad_GSE131907_mal_ClustoBrainMet_so$ClustoCell <- factor(luad_GSE131907_mal_ClustoBrainMet_so$ClustoCell,
+                                                          levels = paste("C", c(1:3,6,7,10:12), sep = ""))
+
+#_______________
+
+luad_GSE131907_mal_brainMet_Clusto_umap <- CellDimPlot(luad_GSE131907_mal_ClustoBrainMet_so,
+                                              reduction = "umap", group_by = "BrainMet_State", label = F, pt_size = 0.000001, 
+                                              theme = "theme_blank", xlab = "", ylab = "", raster = F, 
+                                              legend.position = "right", legend.direction = "vertical", palette = "npg") +
+  # Add coord_fixed to remove internal axis padding (no expansion around UMAP points)
+  coord_fixed(clip = "off", expand = FALSE) +  
+  paletteer::scale_color_paletteer_d("ggprism::colors") +
+  theme(
+    legend.title = element_text(face = "italic", size = 9),
+    text = element_text(size = 8),
+    title = element_text(size = 8),
+    axis.title = element_blank(),
+    # NEW: Remove outer white space around entire plot (top, right, bottom, left)
+    plot.tag = element_text(size = 7, face = "bold"),
+    plot.margin = margin(t = 0, r = 0, b = 0, 0),
+    legend.margin = margin(t = 0, r = 2, b = 0, l = -5),      # Internal legend padding
+    legend.box.margin = margin(t = 0, r = 2, b = 0, l = -5),  # External space to plot (keep slight right for legend fit)
+    legend.box.spacing = unit(0, "pt"),
+    legend.key.size = unit(0.5, "cm"),
+    legend.text = element_text(size = 5),
+    legend.key.width = unit(0, "pt"),  # Minimize space between point and text
+    legend.text.align = 0,
+    legend.key.spacing.y = unit(-5, "pt")
+  ) +
+  labs(color = NULL, x = NULL, y = NULL, tag = "i") +
+  guides(color = guide_legend(override.aes = list(size = 2))) 
+
+#________________________
+
+luad_GSE131907_mal_brainMet_ClustoCell_vs_Subtype <- table(ClustoCell = luad_GSE131907_mal_ClustoBrainMet_so$ClustoCell, Subtype = luad_GSE131907_mal_ClustoBrainMet_so$BrainMet_State)
+luad_GSE131907_mal_brainMet_ClustoCell_vs_Subtype_maxOverlap <- round(((luad_GSE131907_mal_brainMet_ClustoCell_vs_Subtype %>% apply(1, max) %>% sum())/ncol(luad_GSE131907_mal_ClustoBrainMet_so))*100)
+
+
+luad_GSE131907_mal_brainMet_ClustoCell_vs_Subtype <- as.data.frame(luad_GSE131907_mal_brainMet_ClustoCell_vs_Subtype)
+colnames(luad_GSE131907_mal_brainMet_ClustoCell_vs_Subtype) <- c("ClustoCell", "Subtype", "Count")
+
+# Color annotation for the x axis
+luad_GSE131907_mal_brainMet_Subtype_df <- luad_GSE131907_mal_brainMet_ClustoCell_vs_Subtype |>
+  distinct(Subtype) |>
+  mutate(Subtype = factor(levels(luad_GSE131907_mal_ClustoBrainMet_so$BrainMet_State), 
+                          levels = levels(luad_GSE131907_mal_ClustoBrainMet_so$BrainMet_State))) %>% 
+  mutate(color = paletteer::paletteer_d("ggprism::colors")[1:8])
+
+
+luad_GSE131907_mal_brainMet_ClustoCell_vs_Subtype_plt <- ggplot(luad_GSE131907_mal_brainMet_ClustoCell_vs_Subtype, 
+                                                    aes(x = Subtype, 
+                                                        y = ClustoCell,  color = Count)) +
+  geom_point(size = log10(luad_GSE131907_mal_brainMet_ClustoCell_vs_Subtype$Count)/1.5) +
+  # geom_text(aes(label = Count)) +
+  scale_color_gradient(low = "white", high = scales::muted("#DC0000FF"), labels = scales::label_number(scale = 1e-3, suffix = "k")) +
+  theme_minimal() +
+  labs(title = NULL, 
+       x = "Brain Met. Cell Subtype", 
+       tag = "j",
+       subtitle = paste0("Concordance: ",
+                         luad_GSE131907_mal_brainMet_ClustoCell_vs_Subtype_maxOverlap,
+                         '%')) + 
+  
+  geom_tile(
+    data = luad_GSE131907_mal_brainMet_Subtype_df,
+    aes(x = Subtype, y = -0, fill = color),
+    inherit.aes = FALSE,
+    height = 0.6
+  ) +
+  scale_fill_identity(guide = "none") +                    # use literal colors for strip
+  scale_y_discrete(expand = expansion(add = 0.6)) +  # leave space at bottom
+  coord_cartesian(clip = "off")  +      # prevent clipping of strip
+  
+  styled_theme(legend_position = "right", style = "classic", title_align = "left", border_mode = "all", legends_to_drop = "size") +
+  theme(plot.margin = margin(t = 0, b = 0),
+        text = element_text(size = 7),
+        legend.margin = margin(0, 0, 0, 0),      # Internal legend padding
+        legend.box.margin = margin(0, 0, 0, 5),  # External space to plot
+        legend.box.spacing = unit(0, "pt"),
+        title = element_text(size = 7),
+        plot.subtitle = element_text(size = 7),
+        axis.title.x = element_text(size = 7),
+        axis.title.y = element_blank(),
+        axis.text.x  = element_blank(),   # hide text
+        axis.ticks.x = element_blank(),
+        plot.tag = element_text(size = 7, face = "bold"),
+        legend.title = element_text(size = 5.5, margin = margin(b = 2)),
+        legend.key.width = unit(0.25, "cm"),
+        legend.key.height = unit(0.5, "cm")) + 
+  guides(color = guide_colorbar(barheight = unit(1.5, "cm"), 
+                                barwidth = unit(0.2, "cm")))
+
+#__________________________________________
+
+# Combine the plots
+
+fourth_row_combined <- (
+    luad_GSE131907_mal_brainMet_Clusto_umap +
+    luad_GSE131907_mal_brainMet_ClustoCell_vs_Subtype_plt
+  ) + 
+  plot_layout(widths = c(23, 15), heights = 1, guides = "keep")
+
+
+ggsave(filename = "../../../Testing results/GSE131907/Final/fourth_row_combined.png", 
+       plot = fourth_row_combined, device = "png", width = 6.85, height = 1.762, units = "in", dpi = 300)
+
+ggsave(filename = "../../../Testing results/GSE131907/Final/fourth_row_combined.pdf", 
+       plot = fourth_row_combined, device = "pdf", width = 6.85, height = 1.762, units = "in", dpi = 300)
+
+
+```
+
+# Combine all rows
+
+```{r}
+
+figure_combined_rows <- wrap_plots(first_row_combined, 
+                                   second_row_combined, 
+                                   third_row_combined, 
+                                   fourth_row_combined, 
+                                   heights = c(1.1, 1.1, 0.85, 1)) & theme(plot.margin = margin(5, 5, 5, 5))
+
+ggsave(filename = "../../../Testing results/figure_combined_rows.pdf", 
+       plot = figure_combined_rows, device = "pdf", width = 6.85, height = (1.762)*4.4, units = "in", dpi = 300)
+
+ggsave(filename = "../../../Testing results/figure_combined_rows.png", 
+       plot = figure_combined_rows, device = "png", width = 6.85, height = (1.762)*4.5, units = "in", dpi = 300)
+
+```
+
