@@ -17,6 +17,7 @@ knitr::opts_chunk$set(
 
 [![CelliVerse R package](https://img.shields.io/badge/CelliVerse-R%20package-276DC3)](https://github.com/asalavaty/celliverse)
 [![CRAN](https://www.r-pkg.org/badges/version/celliverse?color=blue)](https://cran.r-project.org/package=celliverse)
+[![Feature Explorer](https://img.shields.io/badge/✨-Feature%20Explorer-6D28D9)](https://asalavaty.com/widgets/CelliVerse)
 [![Zenodo](https://img.shields.io/badge/Zenodo-10.5281%2Fzenodo.20550512-1682D4)](https://doi.org/10.5281/zenodo.20550512)
 [![Hugging Face Space](https://img.shields.io/badge/🤗%20Hugging%20Face-Space-yellow)](https://huggingface.co/spaces/asalavaty/celliverse)
 
@@ -180,8 +181,9 @@ remotes::install_github(
 )
 ```
 
-For complete package documentation, examples, and tutorials, see:
+For complete package documentation, examples, and interactive resources, see:
 
+- [CelliVerse Feature Explorer](https://asalavaty.com/widgets/CelliVerse)
 - [CelliVerse GitHub repository](https://github.com/asalavaty/celliverse)
 - [CelliVerse CRAN page](https://cran.r-project.org/package=celliverse)
 - [CelliVerse vignette](https://cran.r-project.org/web/packages/celliverse/vignettes/Introduction-to-CelliVerse.html)
@@ -217,13 +219,29 @@ The Agent supports both cloud-based language models and local models through pro
 
 ---
 
-## Interactive demonstration
+## Explore CelliVerse interactively
 
-A lightweight browser-based demonstration of selected CelliVerse functionality is available through Hugging Face Spaces:
+Three complementary resources are available for exploring CelliVerse without first working through the full package documentation.
 
-[![Open CelliVerse Demo](https://img.shields.io/badge/🤗-Open%20CelliVerse%20Demo-FFD21E?style=for-the-badge)](https://huggingface.co/spaces/asalavaty/celliverse)
+### Feature Explorer
 
-The demo provides an interactive ClustoCell PBMC3K example using precomputed outputs, allowing users to explore UMAP visualizations, clusters, sub-clusters, and marker results without installing the package locally.
+The **[CelliVerse Feature Explorer](https://asalavaty.com/widgets/CelliVerse)** provides a focused interactive way to browse the features and capabilities of the CelliVerse R package and identify workflows relevant to a particular analysis.
+
+<p align="center">
+<a href="https://asalavaty.com/widgets/CelliVerse" target="_blank" rel="noopener noreferrer">
+<img src="https://img.shields.io/badge/✨-Open%20Feature%20Explorer-6D28D9?style=for-the-badge" alt="Open CelliVerse Feature Explorer"/>
+</a>
+</p>
+
+### ClustoCell interactive demo
+
+A lightweight browser-based demonstration of selected ClustoCell outputs is available through Hugging Face Spaces. The demo uses precomputed PBMC3K results and allows users to explore UMAP visualizations, ClustoCell clusters and sub-clusters, and marker tables without installing the package locally.
+
+<p align="center">
+<a href="https://huggingface.co/spaces/asalavaty/celliverse" target="_blank" rel="noopener noreferrer">
+<img src="https://img.shields.io/badge/🤗-Open%20ClustoCell%20Demo-FFD21E?style=for-the-badge" alt="Open ClustoCell Demo"/>
+</a>
+</p>
 
 ---
 
@@ -245,9 +263,10 @@ Because individual scripts may use different public datasets and analysis-specif
 
 | Resource | Location |
 |:--|:--|
+| CelliVerse Feature Explorer | [asalavaty.com/widgets/CelliVerse](https://asalavaty.com/widgets/CelliVerse) |
 | CelliVerse R package | [github.com/asalavaty/celliverse](https://github.com/asalavaty/celliverse) |
 | CRAN package | [cran.r-project.org/package=celliverse](https://cran.r-project.org/package=celliverse) |
-| Manuscript analysis repository | [github.com/asalavaty/CelliVerse-Project](https://github.com/asalavaty/CelliVerse-Project) |
+| Reproducibility repository | [github.com/asalavaty/CelliVerse-Project](https://github.com/asalavaty/CelliVerse-Project) |
 | Archived study datasets | [Zenodo: 10.5281/zenodo.20550512](https://doi.org/10.5281/zenodo.20550512) |
 | Interactive ClustoCell demo | [Hugging Face Space](https://huggingface.co/spaces/asalavaty/celliverse) |
 | Package vignette | [CelliVerse vignette](https://cran.r-project.org/web/packages/celliverse/vignettes/Introduction-to-CelliVerse.html) |

@@ -2000,12 +2000,14 @@ C10_source_plt <-
 
 #________________
 
+prostate_T_N <- NormalizeData(prostate_T_N)
+
 prostate_T_N_marker_vis <- 
   FeatureStatPlot(subset(prostate_T_N, subset = combined_label %in% c("ERG+ Malignant Cell (C10)", "Luminal Epithelial Cell (C1, C9)")), 
                 features = c("PCA3", "ERG", "CRISP3", "FOLH1", "GOLM1", "NKX3-1", "KLK4", "KLK3"), 
                 group_by = c("combined_label"), 
                 ident = c("combined_label"), plot_type = "violin", pos_only = "any",
-                violin_linewidth = 0.01, ylab = "Log1p(Count)",
+                violin_linewidth = 0.01, ylab = "Log-normalised Count",
                 comparisons = list(c("ERG+ Malignant Cell (C10)", "Luminal Epithelial Cell (C1, C9)")), ref_group = "ERG+ Malignant Cell (C10)",
                 pairwise_method = "wilcox.test", sig_label = "p.adj.signif", sig_labelsize = 1.6,
                 theme = ggplot2::theme_classic, add_bg = TRUE, 
@@ -2042,8 +2044,8 @@ prostate_T_N_marker_vis <-
   ) +
   labs(fill = NULL, x = NULL) +
   guides(
-    color = guide_legend(ncol = 1, bycol = TRUE),
-    fill  = guide_legend(ncol = 1, bycol = TRUE)
+    color = guide_legend(ncol = 1),
+    fill  = guide_legend(ncol = 1)
   ) +
   ggplot2::theme(line = element_line(linewidth = 0.1))
 
